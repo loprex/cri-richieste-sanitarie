@@ -788,7 +788,9 @@ def previous_event_years(data:dict,submitted_at:str|None)->tuple[list[int],str]:
         dates=data.get('event_dates')
         if isinstance(dates,str):
             years.update(int(year) for year in re.findall(
-                r'\\b((?:19|20)[0-9]{2})-[0-9]{2}-[0-9]{2}\\b',dates))
+                r'\b((?:19|20)[0-9]{2})-[0-9]{2}-[0-9]{2}\b',dates))
+            years.update(int(year) for year in re.findall(
+                r'\b[0-3]?[0-9]/[01]?[0-9]/((?:19|20)[0-9]{2})\b',dates))
     if years:return sorted(years,reverse=True),'event'
     year_match=re.match(r'^((?:19|20)[0-9]{2})',submitted_at or '')
     return ([int(year_match.group(1))] if year_match else []),'submission'
