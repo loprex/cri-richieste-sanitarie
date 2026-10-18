@@ -8,7 +8,7 @@ os.environ["DATA_DIR"]=TEST_DIR
 os.environ["DATABASE_URL"]="sqlite:///"+str(Path(TEST_DIR)/"test.db")
 os.environ["ADMIN_PASSWORD"]="sample-admin-password-for-tests-only-1234"
 os.environ["SESSION_SECRET"]="sample-test-secret-key-not-for-production-0123456789"
-os.environ["CRI_ADMIN_EMAIL"]="admin@example.test"
+os.environ["CRI_ADMIN_EMAIL"]="admin@example.com"
 os.environ["COOKIE_SECURE"]="false"
 os.environ.pop("SMTP_HOST",None)
 
@@ -23,22 +23,22 @@ def login(email,password):
     return client,{"x-cri-csrf":response.json()["csrf"]}
 
 def test_multiuser_protocol_and_internal_recipients(monkeypatch):
-    admin,ah=login("admin@example.test",os.environ["ADMIN_PASSWORD"])
-    for email,name in (("maria@example.test","Maria"),("luca@example.test","Luca")):
+    admin,ah=login("admin@example.com",os.environ["ADMIN_PASSWORD"])
+    for email,name in (("maria@example.com","Maria"),("luca@example.com","Luca")):
         response=admin.post("/api/users",headers=ah,json={
             "email":email,"display_name":name,"password":"Temporary-test-password-123!"})
         assert response.status_code==200,response.text
-    maria,mh=login("maria@example.test","Temporary-test-password-123!")
-    luca,lh=login("luca@example.test","Temporary-test-password-123!")
+    maria,mh=login("maria@example.com","Temporary-test-password-123!")
+    luca,lh=login("luca@example.com","Temporary-test-password-123!")
     created=maria.post("/api/requests",headers=mh,json={
-        "customer_email":"organizzatore@example.test","event_name":"Porte Aperte",
+        "customer_email":"organizzatore@example.com","event_name":"Porte Aperte",
         "event_city":"Venezia","days":14})
     assert created.status_code==200,created.text
     request_id=created.json()["id"]
     token=created.json()["url"].split("/r/")[1]
     mine=maria.get("/api/requests").json()
     assert len(mine)==1 and mine[0]["id"]==request_id
-    assert mine[0]["creator_email"]=="maria@example.test"
+    assert mine[0]["creator_email"]=="maria@example.com"
     assert mine[0]["event_name"]=="Porte Aperte" and mine[0]["event_city"]=="Venezia"
     assert mine[0]["created_at"] and mine[0]["expires_at"]
     assert mine[0]["protocol_number"] is None
@@ -48,10 +48,10 @@ def test_multiuser_protocol_and_internal_recipients(monkeypatch):
     assert luca.get(f"/api/requests/{request_id}/excel").status_code==404
     assert luca.post(f"/api/requests/{request_id}/archive",headers=lh).status_code==404
     assert luca.post(f"/api/requests/{request_id}/send-email",headers=lh).status_code==404
-    assert admin.get("/api/requests").json()[0]["creator_email"]=="maria@example.test"
+    assert admin.get("/api/requests").json()[0]["creator_email"]=="maria@example.com"
     assert maria.get("/api/users").status_code==403
     assert maria.post("/api/users",headers=mh,json={
-        "email":"alice@example.test","display_name":"Alice","password":"aaaaaaaaaaaa"}).status_code==403
+        "email":"alice@example.com","display_name":"Alice","password":"aaaaaaaaaaaa"}).status_code==403
     assert maria.get("/api/settings/mail").status_code==403
     assert maria.post("/r/"+token,data={"org_name":"Private"}).status_code==405
     page=maria.get("/r/"+token)
@@ -64,7 +64,7 @@ def test_multiuser_protocol_and_internal_recipients(monkeypatch):
     assert maria.get("/api/requests").json()[0]["status"]=="pending"
 
     configured=admin.put("/api/settings/mail",headers=ah,json={
-        "enabled":True,"recipients":"office@example.test;admin@example.test",
+        "enabled":True,"recipients":"office@example.com;admin@example.com",
         "subject":"Piano Sanitario {protocol} - {event}",
         "body":"Evento {event}: {protocol_date}"})
     assert configured.status_code==200,configured.text
@@ -78,13 +78,13 @@ def test_multiuser_protocol_and_internal_recipients(monkeypatch):
         def send_message(self,message):captured.append(message)
     monkeypatch.setattr(backend.smtplib,"SMTP",FakeSMTP)
     monkeypatch.setattr(backend,"render_excel",lambda template,data:b"TEST FILE CONTENT")
-    monkeypatch.setenv("SMTP_HOST","smtp.example.test")
-    monkeypatch.setenv("SMTP_FROM","sender@example.test")
-    monkeypatch.setenv("SMTP_USER","sender@example.test")
+    monkeypatch.setenv("SMTP_HOST","smtp.example.com")
+    monkeypatch.setenv("SMTP_FROM","sender@example.com")
+    monkeypatch.setenv("SMTP_USER","sender@example.com")
     data={
         "org_name":"Ente esempio","org_contact":"Referente Esempio",
         "org_address":"Via Roma 10 Venezia","org_phone":"0410000000",
-        "org_email":"organizzatore@example.test","event_name":"Porte Aperte",
+        "org_email":"organizzatore@example.com","event_name":"Porte Aperte",
         "event_city":"Venezia","event_dates":"2026-11-24",
         "event_time":"2026-11-24 09:00-18:00",
         "event_slots":[{"date":"2026-11-24","start":"09:00","end":"18:00"}],
@@ -101,8 +101,8 @@ def test_multiuser_protocol_and_internal_recipients(monkeypatch):
     assert receipt["protocol_at"]
     assert len(captured)==1
     recipients={s.strip() for s in captured[0]["To"].split(",")}
-    assert recipients=={"admin@example.test","office@example.test","maria@example.test"}
-    assert "organizzatore@example.test" not in recipients
+    assert recipients=={"admin@example.com","office@example.com","maria@example.com"}
+    assert "organizzatore@example.com" not in recipients
     assert receipt["protocol_number"] in captured[0]["Subject"]
     assert receipt["protocol_number"] in captured[0].get_content()
     details=maria.get(f"/api/requests/{request_id}").json()
@@ -118,16 +118,16 @@ def test_multiuser_protocol_and_internal_recipients(monkeypatch):
     assert maria.get("/r/"+token).status_code==410
 
     users=admin.get("/api/users").json()
-    maria_id=next(u["id"] for u in users if u["email"]=="maria@example.test")
+    maria_id=next(u["id"] for u in users if u["email"]=="maria@example.com")
     reset=admin.put(f"/api/users/{maria_id}/password",headers=ah,json={
         "password":"New-temporary-test-password-456!"})
     assert reset.status_code==200
     assert maria.get("/api/session").status_code==401
-    relogin,_=login("maria@example.test","New-temporary-test-password-456!")
+    relogin,_=login("maria@example.com","New-temporary-test-password-456!")
     assert relogin.get("/api/session").status_code==200
-    new_email=admin.put(f"/api/users/{maria_id}/email",headers=ah,json={"email":"maria2@example.test"})
+    new_email=admin.put(f"/api/users/{maria_id}/email",headers=ah,json={"email":"maria2@example.com"})
     assert new_email.status_code==200
     assert relogin.get("/api/session").status_code==401
-    relogin,_=login("maria2@example.test","New-temporary-test-password-456!")
+    relogin,_=login("maria2@example.com","New-temporary-test-password-456!")
     assert admin.put(f"/api/users/{maria_id}/status",headers=ah,json={"active":False}).status_code==200
     assert relogin.get("/api/session").status_code==401
