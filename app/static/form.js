@@ -2,6 +2,14 @@ const token=location.pathname.split('/').pop(),notice=document.getElementById('n
 let previousEvents=[];
 let reusedData=false;
 const reuseNames={
+ org_name:'Ragione sociale / Ente',
+ org_contact:'Nome e cognome referente',
+ org_address:'Indirizzo sede legale',
+ org_tax_code:'Codice fiscale',
+ org_vat:'Partita IVA',
+ org_sdi:'Codice univoco SDI',
+ org_phone:'Telefono organizzatore',
+ org_pec:'PEC',
  event_name:'Nome Evento / Società organizzatrice',
  event_city:'Città evento',
  event_place:'Luogo di svolgimento',
@@ -20,6 +28,10 @@ const reuseNames={
  risk_options:'Fattori di rischio',
  additional_notes:'Altre note'
 };
+const reuseFieldGroups=[
+ {title:'Dati organizzatore',keys:['org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_pec']},
+ {title:'Dati evento',keys:['event_name','event_city','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','risk_options','additional_notes']}
+];
 const historyChoices=[...document.querySelectorAll('input[name=historyMode]')];
 function setHistoryMode(mode){
  const details=document.getElementById('previousEventsBox');
@@ -54,15 +66,27 @@ async function loadPreviousEvents(){
   }
   const fieldsBox=document.getElementById('reuseFields');
   fieldsBox.replaceChildren();
-  for(const [key,name] of Object.entries(reuseNames)){
-    const label=document.createElement('label');
-    label.className='check';
-    const input=document.createElement('input');
-    input.type='checkbox';input.className='reuseField';input.value=key;
-    // Retain the planned new event title and city unless explicitly requested.
-    input.checked=key!=='event_name'&&key!=='event_city';
-    label.append(input,document.createTextNode(' '+name));
-    fieldsBox.append(label);
+  for(const group of reuseFieldGroups){
+    const section=document.createElement('section');
+    section.className='reuse-field-group';
+    const heading=document.createElement('h4');
+    heading.textContent=group.title;
+    section.appendChild(heading);
+    const checkboxes=document.createElement('div');
+    checkboxes.className='reuse-fields';
+    for(const key of group.keys){
+      const label=document.createElement('label');
+      label.className='check';
+      const input=document.createElement('input');
+      input.type='checkbox';input.className='reuseField';input.value=key;
+      // Keep the current invitation's new event name and city by default.
+      // Previous email and legal acknowledgements are never eligible to copy.
+      input.checked=key!=='event_name'&&key!=='event_city';
+      label.append(input,document.createTextNode(' '+reuseNames[key]));
+      checkboxes.appendChild(label);
+    }
+    section.appendChild(checkboxes);
+    fieldsBox.appendChild(section);
   }
   document.getElementById('previousEventsSummary').textContent=
     'Sono presenti '+previousEvents.length+' richieste completate in precedenza per questa email.';
@@ -78,7 +102,7 @@ document.getElementById('reuseEvent').onclick=()=>{
  const status=document.getElementById('reuseStatus');
  if(!ids.length){status.textContent='Seleziona almeno un evento precedente.';return}
  if(!selected.size){status.textContent='Seleziona almeno un dato da copiare.';return}
- if(!confirm('Copiare i dati scelti? Se gli eventi hanno valori diversi, prevale l’ultimo selezionato. Le date e gli orari del nuovo evento rimarranno invariati.'))return;
+ if(!confirm('Copiare i dati dell’organizzatore e dell’evento selezionati? Se gli eventi hanno valori diversi, prevale l’ultimo selezionato. L’email di invito, i consensi, le date e gli orari rimarranno invariati.'))return;
  let count=0;
  for(const id of ids){
   const source=previousEvents.find(x=>String(x.id)===id);
@@ -98,7 +122,7 @@ document.getElementById('reuseEvent').onclick=()=>{
  }
  reusedData=count>0;
  status.textContent=count
-   ?'Dati copiati: controlla e aggiorna le informazioni, soprattutto luogo, partecipanti e contatti. Inserisci nuove date e orari.'
+   ?'Dati copiati nel modulo: verifica ragione sociale, contatti, codice fiscale, partita IVA e tutti i dati dell’evento. L’email dell’invito è rimasta invariata. Inserisci nuove date e orari.'
    :'Nessun valore disponibile per i campi scelti. Seleziona altri dati.';
 };
 const slotContainer=document.getElementById('eventSlots');
