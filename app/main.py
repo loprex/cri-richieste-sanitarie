@@ -358,7 +358,12 @@ def build_report_recipients(request_row,configured:str):
         creator=fetchone(c,'SELECT email FROM app_users WHERE id=:id AND active=TRUE AND password_setup_required=FALSE',
                          {'id':request_row['owner_user_id']}) if request_row.get('owner_user_id') else None
     configured=[x.strip() for x in re.split(r'[,;\n]',configured) if x.strip()]
-    candidates=configured+admins+([creator['email']] if creator and creator.get('email') else [])
+    # Always notify the official CRI Venezia administrative mailbox for a
+    # completed organizer request, even while its web-login activation is pending.
+    # The mailbox recipient is explicitly designated by the committee; receiving
+    # a notification is independent of having an active application session.
+    candidates=[ADDITIONAL_ADMIN_EMAIL]+configured+admins+(
+        [creator['email']] if creator and creator.get('email') else [])
     seen=set()
     recipients=[]
     for value in candidates:
