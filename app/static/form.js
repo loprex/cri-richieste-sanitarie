@@ -1,28 +1,33 @@
 
 let previousEvents=[];
+const reuseNames={event_name:'Nome evento',event_place:'Luogo',event_description:'Descrizione',reference_name:'Referente',reference_phone:'Telefono referente',event_type:'Tipo evento',recurrence:'Frequenza',location_type:'Caratteristiche del luogo',road_closure:'Modifica viabilità',participants_athletes:'Atleti',participants_public:'Pubblico',children:'Bambini',elderly:'Anziani',disabled:'Persone con disabilità',risk_options:'Fattori di rischio',additional_notes:'Altre note'};
 async function loadPreviousEvents(){
  try{
   const response=await fetch('/api/r/'+encodeURIComponent(token)+'/previous-events');
   if(!response.ok)return;
   previousEvents=await response.json();
-  const box=document.getElementById('previousEventsBox'),select=document.getElementById('previousEvent');
   if(!previousEvents.length)return;
-  for(const event of previousEvents){const opt=document.createElement('option');opt.value=String(event.id);opt.textContent=event.name+' (richiesta #'+event.id+')';select.appendChild(opt)}
-  box.classList.remove('hidden');
- }catch(e){/* Keep manual compilation available if history is unavailable. */}
+  const choices=document.getElementById('previousEventChoices');
+  for(const ev of previousEvents){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.className='previousChoice';input.value=String(ev.id);label.append(input,document.createTextNode(' '+ev.name+' (richiesta #'+ev.id+')'));choices.append(label)}
+  const fieldsBox=document.getElementById('reuseFields');
+  for(const [key,name] of Object.entries(reuseNames)){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.className='reuseField';input.value=key;input.checked=true;label.append(input,document.createTextNode(' '+name));fieldsBox.append(label)}
+  document.getElementById('previousEventsBox').classList.remove('hidden');
+ }catch(e){/* Manual completion remains available. */}
 }
 document.getElementById('reuseEvent').onclick=()=>{
- const chosen=previousEvents.find(x=>String(x.id)===document.getElementById('previousEvent').value);
- if(!chosen)return;
- if(!confirm('Recuperare i dati dell’evento precedente? Date e orari attuali resteranno invariati.'))return;
- for(const [key,value] of Object.entries(chosen.data)){
-   if(key==='risk_options'){document.querySelectorAll('[name=risk_options]').forEach(c=>c.checked=Array.isArray(value)&&value.includes(c.value));continue}
-   const el=form.elements[key];
-   if(el)el.value=typeof value==='boolean'?String(value):value;
+ const ids=[...document.querySelectorAll('.previousChoice:checked')].map(x=>x.value);
+ const fields=new Set([...document.querySelectorAll('.reuseField:checked')].map(x=>x.value));
+ if(!ids.length){message('Seleziona almeno un evento archiviato.',true);return}
+ if(!fields.size){message('Seleziona almeno un campo da importare.',true);return}
+ if(!confirm('Importare i campi selezionati dagli eventi archiviati? In caso di valori diversi prevale l’ultimo evento selezionato. Date e orari resteranno invariati.'))return;
+ for(const id of ids){const event=previousEvents.find(x=>String(x.id)===id);if(!event)continue;
+  for(const [key,value] of Object.entries(event.data)){if(!fields.has(key))continue;
+    if(key==='risk_options'){document.querySelectorAll('[name=risk_options]').forEach(c=>c.checked=Array.isArray(value)&&value.includes(c.value));continue}
+    const el=form.elements[key];if(el)el.value=typeof value==='boolean'?String(value):value;
+  }
  }
- message('Informazioni evento recuperate. Inserisci le nuove date e fasce orarie e controlla i dati prima dell’invio.');
+ message('Dati importati: controlla le informazioni e inserisci nuove date e fasce orarie.');
 };
-
 const slotContainer=document.getElementById('eventSlots');
 function addSlot(date='',start='',end=''){
  const row=document.createElement('div');row.style.cssText='display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:8px 0;padding:10px;border:1px solid #ddd;border-radius:8px';
