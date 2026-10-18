@@ -5,7 +5,7 @@ function humanStatus(s){return STATUS_LABELS[s]||s}
 const MAIL_STATUS={disabled:'Invio automatico disattivato',no_recipients:'Nessun destinatario valido',smtp_not_configured:'SMTP non configurato',smtp_send_failed:'Errore SMTP',excel_generation_failed:'Errore nella generazione Excel',not_submitted:'Richiesta non ancora compilata',already_sent:'Già inviata',sent:'Email accettata dal server SMTP',failed:'Invio fallito'};
 function mailStatus(code){return MAIL_STATUS[code]||code||'Non inviata'}
 function humanValue(v){return v==null||v===''?'Non indicato':Array.isArray(v)?v.join(', '):typeof v==='boolean'?(v?'Sì':'No'):String(v)}
-let csrf='';let selected=0;let currentFilter='all';let currentUser={email:'',legacy_login:'',is_admin:false};const $=id=>document.getElementById(id);const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let csrf='';let selected=0;let currentFilter='all';let currentUser={email:'',legacy_login:'',is_admin:false,can_delete_accounts:false};let deletingAccount=null;const $=id=>document.getElementById(id);const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function msg(s,bad=false){$('notice').className='notice '+(bad?'err':'good');$('notice').textContent=s;window.scrollTo({top:0,behavior:'smooth'})}
 async function api(path,method='GET',body){let r=await fetch('/api'+path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json','x-cri-csrf':csrf},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok){let e;try{e=(await r.json()).detail}catch{e=r.statusText}throw new Error(typeof e==='string'?e:JSON.stringify(e))}return r.json()}
 async function init(){try{const session=await api('/session');csrf=session.csrf;onLogin(session)}catch{}}
@@ -24,7 +24,7 @@ $('navRequests').onclick=()=>showSection('requests');
 $('navSettings').onclick=()=>showSection('settings');
 $('navUsers').onclick=()=>showSection('users');
 function onLogin(session){
- currentUser={id:session.user_id,email:session.email,legacy_login:session.legacy_login,is_admin:session.is_admin,display_name:session.display_name};
+ currentUser={id:session.user_id,email:session.email,legacy_login:session.legacy_login,is_admin:session.is_admin,display_name:session.display_name,can_delete_accounts:session.can_delete_accounts===true};
  $('login').classList.add('hidden');$('dashboard').classList.remove('hidden');
  $('whoAmI').textContent=(session.display_name||session.email||session.legacy_login)+(session.is_admin?' · Amministratore':' · Operatore');
  document.querySelectorAll('.adminOnly').forEach(x=>x.classList.toggle('hidden',!session.is_admin));
@@ -145,12 +145,14 @@ async function loadUsers(){
      lockedAutomatically?'Bloccato dopo 3 errori':
      u.password_setup_required?'In attesa di password':'Attivo';
    const attempts=lockedManually||lockedAutomatically?'':(' · '+(u.failed_login_attempts||0)+'/3 errori');
-   const actions=self?'Account in uso':
+   const actions=(self?'Account in uso':
      '<button type="button" class="secondary statusButton" data-user="'+u.id+
      '" data-active="'+String(u.active)+'">'+(lockedManually?'Sblocca accesso':'Blocca accesso')+'</button>'+
      (lockedAutomatically&&u.active?
       ' <button type="button" class="secondary unlockButton" data-user="'+u.id+
-      '">Sblocca dopo errori</button>':'');
+      '">Sblocca dopo errori</button>':''))+
+     (currentUser.can_delete_accounts&&!self&&u.username!=='admin'?
+      ' <button type="button" class="deleteAccountButton" data-user="'+u.id+'">Elimina account</button>':'');
    return '<tr><td><b>'+esc(u.display_name)+'</b><div class="muted">'+
      esc(u.email||'Email da configurare (accesso temporaneo: '+u.username+')')+
      '</div><input type="email" class="userEmail" data-user="'+u.id+
@@ -207,8 +209,51 @@ async function loadUsers(){
     msg('Blocco automatico rimosso.');loadUsers();
    }catch(e){msg(e.message,true)}finally{b.disabled=false}
   });
+  document.querySelectorAll('.deleteAccountButton').forEach(b=>b.onclick=()=>{
+   if(!currentUser.can_delete_accounts)return;
+   const victim=users.find(u=>u.id===Number(b.dataset.user));
+   if(!victim||victim.id===currentUser.id)return;
+   deletingAccount={id:victim.id,display_name:victim.display_name,
+     email:victim.email||victim.username};
+   $('deleteAccountForm').reset();
+   $('deleteAccountTarget').textContent='Account selezionato: '+victim.display_name+
+     ' — '+(victim.email||victim.username);
+   $('deleteAccountPanel').classList.remove('hidden');
+   $('deleteConfirmEmail').focus();
+  });
  }catch(err){msg(err.message,true)}
 }
+$('cancelAccountDeletion').onclick=()=>{
+  deletingAccount=null;$('deleteAccountForm').reset();
+  $('deleteAccountPanel').classList.add('hidden');
+};
+$('deleteAccountForm').onsubmit=async e=>{
+ e.preventDefault();
+ if(!currentUser.can_delete_accounts||!deletingAccount)return;
+ const victim=deletingAccount;
+ const email=$('deleteConfirmEmail').value.trim();
+ const confirmation=$('deleteConfirmText').value.trim();
+ const password=$('deleteAccountPassword').value;
+ if(email.toLowerCase()!==victim.email.toLowerCase()||confirmation!=='ELIMINA'||!password){
+  msg('Verifica email, parola ELIMINA e password amministrativa.',true);return;
+ }
+ const button=$('confirmAccountDeletion');
+ if(button.disabled)return;
+ button.disabled=true;
+ try{
+  const result=await api('/users/'+victim.id,'DELETE',{
+    confirm_email:email,confirmation,password
+  });
+  deletingAccount=null;
+  $('deleteAccountForm').reset();
+  $('deleteAccountPanel').classList.add('hidden');
+  msg('Account eliminato. Inviti ancora aperti revocati: '+result.revoked_pending_invitations+
+      '. Le richieste storiche restano disponibili.');
+  loadUsers();
+ }catch(err){msg(err.message,true)}
+ finally{button.disabled=false;$('deleteAccountPassword').value=''}
+};
+
 $('newUserForm').onsubmit=async e=>{
  e.preventDefault();
  if(!currentUser.is_admin)return;
