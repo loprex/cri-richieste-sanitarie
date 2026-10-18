@@ -137,7 +137,18 @@ $('testMailButton').onclick=async()=>{
 };
 
 let cachedUsers=[];
-let expandedUserId=null;
+
+function lastLoginHtml(value){
+ if(!value)return '<span class="user-login-never">Mai registrato</span>';
+ const date=new Date(value);
+ if(Number.isNaN(date.getTime()))return '<span class="user-login-never">Non disponibile</span>';
+ const dateText=new Intl.DateTimeFormat('it-IT',
+   {timeZone:'Europe/Rome',day:'2-digit',month:'2-digit',year:'numeric'}).format(date);
+ const timeText=new Intl.DateTimeFormat('it-IT',
+   {timeZone:'Europe/Rome',hour:'2-digit',minute:'2-digit',hour12:false}).format(date);
+ return '<time class="user-last-login" datetime="'+esc(value)+'">'+
+   '<span>'+esc(dateText)+'</span><small>ore '+esc(timeText)+'</small></time>';
+}
 
 function renderUsers(){
  const textFilter=$('usersSearch').value.trim().toLocaleLowerCase('it');
@@ -148,67 +159,64 @@ function renderUsers(){
   return matchesText&&(roleFilter==='all'||u.role===roleFilter);
  });
  $('usersCount').textContent=results.length+' di '+cachedUsers.length+' account visualizzati';
- if(!results.some(u=>u.id===expandedUserId))expandedUserId=null;
  if(!results.length){
-   $('usersList').innerHTML='<tr><td colspan="4" class="users-empty">Nessun utente corrisponde ai filtri.</td></tr>';
+   $('usersList').innerHTML='<tr><td colspan="6" class="users-empty">Nessun utente corrisponde ai filtri.</td></tr>';
    return;
  }
  $('usersList').innerHTML=results.map(u=>{
    const self=Number(u.id)===Number(currentUser.id);
-   const opened=expandedUserId===u.id;
+   const protectedUser=self||u.role==='superadmin';
    const manuallyLocked=!u.active;
    const autoLocked=!!u.auto_locked_at;
    const pending=!!u.password_setup_required;
    const state=manuallyLocked?'Bloccato manualmente':
-     autoLocked?'Bloccato dopo 3 errori':pending?'Attivazione in attesa':'Attivo';
+     autoLocked?'Bloccato dopo 3 errori':pending?'In attesa di password':'Attivo';
    const stateClass=manuallyLocked||autoLocked?'state-locked':pending?'state-pending':'state-active';
-   const role=roleLabel(u.role);
    const attempts=(!manuallyLocked&&!autoLocked&&u.failed_login_attempts)
-     ?'<small class="users-attempts">Errori password: '+u.failed_login_attempts+'/3</small>':'';
-   const userRow='<tr class="user-list-row"><td><strong class="user-list-name">'+esc(u.display_name)+
-     '</strong><small class="user-list-email">'+esc(u.email||'Email non configurata')+
-     '</small></td><td><span class="user-role-tag user-role-'+esc(u.role)+'">'+esc(role)+
-     '</span></td><td><span class="user-state '+stateClass+'">'+esc(state)+
-     '</span>'+attempts+'</td><td><button type="button" class="secondary userManageButton" data-user="'+u.id+
-     '" aria-expanded="'+opened+'" aria-controls="user-details-'+u.id+'">'+
-     (opened?'Chiudi':'Gestisci')+'</button></td></tr>';
-   if(!opened)return userRow;
-   const protectedUser=self||u.role==='superadmin';
-   const roleEdit=protectedUser
-      ?'<strong class="role-superadmin">Super Admin · ruolo protetto</strong>'
-      :'<div class="users-inline"><select class="userRole" data-user="'+u.id+'" aria-label="Ruolo di '+esc(u.display_name)+'">'+
-         '<option value="operator"'+(u.role==='operator'?' selected':'')+'>Utente operatore</option>'+
-         '<option value="admin"'+(u.role==='admin'?' selected':'')+'>Admin</option></select>'+
-         '<button type="button" class="secondary saveRole" data-user="'+u.id+'">Salva ruolo</button></div>';
-   const emailEdit='<div class="users-inline"><input type="email" class="userEmail" data-user="'+u.id+
-       '" value="'+esc(u.email||'')+'" placeholder="Email di accesso" aria-label="Email di '+esc(u.display_name)+'"'+
-       (self?' readonly':'')+'><button type="button" class="secondary saveEmail" data-user="'+u.id+'"'+
-       (self?' disabled':'')+'>Salva email</button></div>';
-   const pwdAction='<button type="button" class="secondary sendSetup" data-user="'+u.id+'"'+
-       (manuallyLocked?' disabled':'')+'>'+(pending?'Invia link attivazione':'Invia reset password')+'</button>';
-   const stateAction=protectedUser?'<p class="muted">Il tuo account principale è protetto.</p>':
-       '<button type="button" class="secondary statusButton" data-user="'+u.id+'" data-active="'+String(u.active)+'">'+
-       (manuallyLocked?'Sblocca accesso':'Blocca accesso')+'</button>'+
-       (autoLocked&&u.active?'<button type="button" class="secondary unlockButton" data-user="'+u.id+'">Sblocca dopo errori</button>':'');
-   const deleteAction=protectedUser?'':('<button type="button" class="deleteAccountButton user-danger" data-user="'+u.id+'">Elimina account</button>');
-   return userRow+'<tr id="user-details-'+u.id+'" class="user-details-row"><td colspan="4">'+
-     '<div class="user-detail-grid">'+
-     '<section class="user-detail-section"><h4>Identità e ruolo</h4><label>Email di accesso</label>'+emailEdit+
-     '<label>Ruolo assegnato</label>'+roleEdit+'</section>'+
-     '<section class="user-detail-section"><h4>Sicurezza e accesso</h4><p class="muted">'+
-       esc(state)+(autoLocked?' · blocco per password errate':'')+'</p>'+
-       '<div class="user-detail-buttons">'+pwdAction+stateAction+'</div>'+
-       (deleteAction?'<div class="user-detail-danger"><h4>Zona riservata</h4><p class="muted">La cancellazione revoca gli inviti aperti ma conserva le richieste storiche.</p>'+deleteAction+'</div>':'')+
-     '</section></div></td></tr>';
+     ?'<small class="users-attempts">'+u.failed_login_attempts+'/3 errori</small>':'';
+   const emailControl='<div class="user-cell-stack">'+
+     '<strong class="user-list-name">'+esc(u.display_name)+'</strong>'+
+     '<input type="email" class="userEmail" data-user="'+u.id+'"'+
+       ' value="'+esc(u.email||'')+'" placeholder="Email da configurare"'+
+       ' aria-label="Email di '+esc(u.display_name)+'"'+(self?' readonly':'')+'>'+
+     '<button type="button" class="secondary saveEmail" data-user="'+u.id+'"'+
+       (self?' disabled title="Email principale protetta"':'')+'>'+
+       (self?'Email protetta':'Salva email')+'</button></div>';
+   const roleControl=protectedUser
+     ?'<div class="user-cell-stack user-protected-role"><strong class="role-superadmin">'+
+       esc(roleLabel(u.role))+'</strong><span class="user-action-note">Ruolo riservato</span></div>'
+     :'<div class="user-cell-stack"><select class="userRole" data-user="'+u.id+
+       '" aria-label="Ruolo di '+esc(u.display_name)+'">'+
+       '<option value="operator"'+(u.role==='operator'?' selected':'')+'>Utente operatore</option>'+
+       '<option value="admin"'+(u.role==='admin'?' selected':'')+'>Admin</option></select>'+
+       '<button type="button" class="secondary saveRole" data-user="'+u.id+
+       '">Salva ruolo</button></div>';
+   const passwordControl='<div class="user-cell-stack user-password-controls">'+
+     '<button type="button" class="secondary sendSetup" data-user="'+u.id+'"'+
+       (manuallyLocked?' disabled title="Sblocca prima l’account"':'')+'>'+
+       (pending?'Invia link':'Reset password')+'</button>'+
+     (u.email?.toLowerCase()==='amministrazione@crivenezia.it'
+       ?'<small class="user-action-note">Invii sospesi in TEST</small>':'')+
+     '</div>';
+   const accessControl=protectedUser
+     ?'<div class="user-access-actions"><span class="user-action-note">Account in uso · protetto</span></div>'
+     :'<div class="user-access-actions">'+
+       '<button type="button" class="secondary statusButton" data-user="'+u.id+
+         '" data-active="'+String(u.active)+'">'+
+         (manuallyLocked?'Sblocca accesso':'Blocca accesso')+'</button>'+
+       (autoLocked&&u.active?
+         '<button type="button" class="secondary unlockButton" data-user="'+u.id+
+           '">Sblocca dopo errori</button>':'')+
+       '<button type="button" class="deleteAccountButton" data-user="'+u.id+
+         '">Elimina account</button></div>';
+   return '<tr class="user-list-row">'+
+     '<td>'+emailControl+'</td><td>'+roleControl+'</td>'+
+     '<td><div class="user-cell-stack"><span class="user-state '+stateClass+'">'+esc(state)+
+       '</span>'+attempts+'</div></td>'+
+     '<td>'+lastLoginHtml(u.last_login_at)+'</td>'+
+     '<td>'+passwordControl+'</td><td>'+accessControl+'</td></tr>';
  }).join('');
 
- document.querySelectorAll('.userManageButton').forEach(b=>b.onclick=()=>{
-   const id=Number(b.dataset.user);
-   expandedUserId=expandedUserId===id?null:id;
-   $('deleteAccountPanel').classList.add('hidden');
-   deletingAccount=null;
-   renderUsers();
- });
  document.querySelectorAll('.saveRole').forEach(b=>b.onclick=async()=>{
    if(!currentUser.can_delete_accounts)return;
    const id=Number(b.dataset.user),user=cachedUsers.find(u=>u.id===id);
