@@ -489,11 +489,13 @@ def create(request:Request,body:Create):
     with db() as c:
         params={'h':digest(token),'email':str(body.customer_email),'created':iso(),'expires':(now()+timedelta(days=body.days)).isoformat(timespec='seconds')}
         params['owner']=user['id']
-        id=c.execute(text("INSERT INTO requests(token_hash,customer_email,created_at,expires_at,status,payload,notes,owner_user_id) VALUES(:h,:email,:created,:expires,'pending','{}','',:owner) RETURNING id"),params).scalar_one()
+        params['event_name']=body.event_name.strip()
+        params['event_city']=body.event_city.strip()
+        id=c.execute(text("INSERT INTO requests(token_hash,customer_email,created_at,expires_at,status,payload,notes,owner_user_id,planned_event_name,planned_event_city) VALUES(:h,:email,:created,:expires,'pending','{}','',:owner,:event_name,:event_city) RETURNING id"),params).scalar_one()
         audit(c,id,'created')
     link=f'{PUBLIC_BASE_URL}/r/{token}'
     invitation_status=send_invitation(id,str(body.customer_email),link,body.days)
-    return {'id':id,'url':link,'expires_in_days':body.days,'invitation_status':invitation_status}
+    return {'id':id,'url':link,'expires_in_days':body.days,'invitation_status':invitation_status,'event_name':body.event_name,'event_city':body.event_city}
 @app.get('/r/{token}')
 def external(token:str,request:Request):
     try:
@@ -544,30 +546,40 @@ def previous_events(token:str):
 @app.get('/api/r/{token}')
 def token_info(token:str):
     r=get_token_record(token)
-    return {'status':r['status'],'customer_email':r['customer_email'],'data':json.loads(r['payload']) if r['status']=='draft' else {}}
+    return {'status':r['status'],'customer_email':r['customer_email'],'event_name':r.get('planned_event_name') or '','event_city':r.get('planned_event_city') or '','data':json.loads(r['payload']) if r['status']=='draft' else {}}
 @app.put('/api/r/{token}')
 def save(token:str,body:Submission,draft:bool=False):
     r=get_token_record(token)
-    if r['status'] not in ('pending','draft'):raise HTTPException(409,'Richiesta già inviata')
-    if not draft and (not body.privacy_ack or not body.declaration):raise HTTPException(422,'Confermare informativa e dichiarazione')
+    if not draft and (not body.privacy_ack or not body.declaration):
+        raise HTTPException(422,'Confermare informativa e dichiarazione')
+    submitted=now_venice() if not draft else None
+    # Internal reference; not the official CRI document registry.
+    protocol=f"CRI-VE/{datetime.fromisoformat(submitted).year}/{r['id']:06d}" if submitted else None
     with db() as c:
-        result=c.execute(text("UPDATE requests SET payload=:p,status=:s,submitted_at=:t WHERE id=:id AND status IN ('pending','draft')"),{'p':body.model_dump_json(),'s':'draft' if draft else 'submitted','t':None if draft else iso(),'id':r['id']})
-        if result.rowcount!=1:raise HTTPException(409,'Richiesta già inviata')
+        result=c.execute(text("""UPDATE requests SET payload=:p,status=:s,
+                submitted_at=:submitted,protocol_number=:protocol,protocol_at=:protocol_date
+             WHERE id=:id AND token_hash=:token_hash
+             AND archived_at IS NULL AND expires_at>:current
+             AND status IN ('pending','draft')"""),
+             {'p':body.model_dump_json(),'s':'draft' if draft else 'submitted',
+              'submitted':submitted,'protocol':protocol,'protocol_date':submitted,
+              'id':r['id'],'token_hash':digest(token),'current':iso()})
+        if result.rowcount!=1:raise HTTPException(409,'Richiesta non più attiva')
         audit(c,r['id'],'saved_draft' if draft else 'submitted')
     mail='not_sent'
     if not draft:
         try:
             mail=mail_request(r['id'],body.model_dump())
         except Exception as exc:
-            # The request is already committed: failed document/email generation
-            # must not make the organizer think they need to submit again.
             logger.error('Post-submission notification failed request=%d type=%s',r['id'],type(exc).__name__)
             with db() as c:
                 c.execute(text('UPDATE requests SET mail_error=:err WHERE id=:id'),
                           {'err':type(exc).__name__,'id':r['id']})
                 audit(c,r['id'],'mail_failed')
             mail='failed'
-    return {'ok':True,'status':'draft' if draft else 'submitted','mail_status':mail}
+    return {'ok':True,'status':'draft' if draft else 'submitted','mail_status':mail,
+            'protocol_number':protocol,'protocol_at':submitted}
+
 @app.get('/api/requests')
 def list_requests(request:Request,view:str='all'):
     user=require_user(request)
@@ -579,8 +591,9 @@ def list_requests(request:Request,view:str='all'):
     }
     if view not in clauses:raise HTTPException(422,'Filtro non valido')
     query="""SELECT r.id,r.customer_email,r.created_at,r.expires_at,r.submitted_at,
+        r.protocol_number,r.protocol_at,r.planned_event_name,r.planned_event_city,
         r.approved_at,r.status,r.payload,r.mailed_at,r.mail_error,r.archived_at,
-        r.owner_user_id,u.username AS creator_username,u.display_name AS creator_name
+        r.owner_user_id,u.email AS creator_email,u.display_name AS creator_name
         FROM requests r LEFT JOIN app_users u ON u.id=r.owner_user_id
         WHERE """+clauses[view]+"""
         AND (:admin = TRUE OR r.owner_user_id=:uid) ORDER BY r.id DESC LIMIT 300"""
@@ -590,9 +603,12 @@ def list_requests(request:Request,view:str='all'):
     for row in rows:
         payload=json.loads(row['payload'])
         result.append({k:row[k] for k in ('id','customer_email','created_at','expires_at',
-            'submitted_at','approved_at','status','mailed_at','mail_error','archived_at',
-            'owner_user_id','creator_username','creator_name')}|
-            {'event_name':payload.get('event_name',''),'org_name':payload.get('org_name','')})
+            'submitted_at','protocol_number','protocol_at','planned_event_name','planned_event_city',
+            'approved_at','status','mailed_at','mail_error','archived_at','owner_user_id',
+            'creator_email','creator_name')}|
+            {'event_name':payload.get('event_name') or row['planned_event_name'] or '',
+             'event_city':payload.get('event_city') or row['planned_event_city'] or '',
+             'org_name':payload.get('org_name','')})
     return result
 
 @app.post('/api/requests/{id}/archive')
@@ -610,7 +626,7 @@ def detail(id:int,request:Request):
     require_request_access(request,id)
     with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
     if not r:raise HTTPException(404,'Richiesta inesistente')
-    return {k:r[k] for k in ('id','customer_email','created_at','submitted_at','approved_at','status','notes','mailed_at','mail_error','archived_at','expires_at','owner_user_id')}|{'data':json.loads(r['payload'])}
+    return {k:r[k] for k in ('id','customer_email','created_at','submitted_at','approved_at','status','notes','mailed_at','mail_error','archived_at','expires_at','owner_user_id','protocol_number','protocol_at','planned_event_name','planned_event_city')}|{'data':json.loads(r['payload'])}
 @app.post('/api/requests/{id}/approve')
 def approve(id:int,body:Approval,request:Request):
     require_admin(request)
@@ -633,7 +649,7 @@ def export_data(id:int,request:Request):
     require_request_access(request,id)
     with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
     if not r:raise HTTPException(404,'Richiesta inesistente')
-    d={k:r[k] for k in ('id','created_at','submitted_at','approved_at','status','notes')}|{'data':json.loads(r['payload'])}
+    d={k:r[k] for k in ('id','created_at','submitted_at','protocol_number','protocol_at','approved_at','status','notes')}|{'data':json.loads(r['payload'])}
     return Response(json.dumps(d,ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':f'attachment; filename="richiesta_{id}.json"'})
 @app.get('/api/settings/mail')
 def get_mail_settings(request:Request):
