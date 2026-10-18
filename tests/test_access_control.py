@@ -122,9 +122,20 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     matches=maria.get(f"/api/r/{token}/address-suggestions?q=Via%20Roma").json()
     assert matches["suggestions"]==["Via Roma 10, 30100 Venezia, Veneto"]
     assert maria.get(f"/api/r/{token}/address-suggestions?q=AB").status_code==422
+    # Photon errors are classified without exposing queries or token values.
+    def reject_with_rate_limit(*args,**kwargs):
+        raise backend.HTTPError('https://photon.komoot.io/api',429,'Too Many Requests',{},None)
+    monkeypatch.setattr(backend,'urlopen',reject_with_rate_limit)
+    overloaded=maria.get(f"/api/r/{token}/address-suggestions?q=Vicolo%20Nuovo")
+    assert overloaded.status_code==200
+    assert overloaded.json()['available'] is False
+    assert overloaded.json()['reason']=='rate_limited'
+    # Cached successful queries do not repeatedly contact the public demo.
+    cached=maria.get(f"/api/r/{token}/address-suggestions?q=Via%20Roma")
+    assert cached.status_code==200 and cached.json()['available'] is True
 
     settings=admin.put("/api/settings/mail",headers=ah,json={
-       "enabled":True,"recipients":"office@example.com;admin@example.com",
+       "enabled":True,"recipients":"office@example.com;admin@example.com;amministrazione@crivenezia.it",
        "subject":"Piano Sanitario {protocol} - {event}","body":"Evento {event} {protocol_date}"})
     assert settings.status_code==200,settings.text
     assert admin.get("/api/settings/mail").json()["administration_mail_paused"] is True
