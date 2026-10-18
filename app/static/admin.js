@@ -4,8 +4,9 @@ function humanLabel(k){return FIELD_LABELS[k]||k.replace(/_/g,' ').replace(/^./,
 function humanStatus(s){return STATUS_LABELS[s]||s}
 const MAIL_STATUS={disabled:'Invio automatico disattivato',no_recipients:'Nessun destinatario valido',smtp_not_configured:'SMTP non configurato',smtp_send_failed:'Errore SMTP',excel_generation_failed:'Errore nella generazione Excel',not_submitted:'Richiesta non ancora compilata',already_sent:'Già inviata',sent:'Email accettata dal server SMTP',failed:'Invio fallito'};
 function mailStatus(code){return MAIL_STATUS[code]||code||'Non inviata'}
+function roleLabel(role){return ({operator:'Utente operatore',admin:'Admin',superadmin:'Super Admin'})[role]||'Ruolo non riconosciuto'}
 function humanValue(v){return v==null||v===''?'Non indicato':Array.isArray(v)?v.join(', '):typeof v==='boolean'?(v?'Sì':'No'):String(v)}
-let csrf='';let selected=0;let currentFilter='all';let currentUser={email:'',legacy_login:'',is_admin:false,can_delete_accounts:false};let deletingAccount=null;const $=id=>document.getElementById(id);const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let csrf='';let selected=0;let currentFilter='all';let currentUser={email:'',legacy_login:'',is_admin:false,role:'operator',can_delete_accounts:false};let deletingAccount=null;const $=id=>document.getElementById(id);const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function msg(s,bad=false){$('notice').className='notice '+(bad?'err':'good');$('notice').textContent=s;window.scrollTo({top:0,behavior:'smooth'})}
 async function api(path,method='GET',body){let r=await fetch('/api'+path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json','x-cri-csrf':csrf},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok){let e;try{e=(await r.json()).detail}catch{e=r.statusText}throw new Error(typeof e==='string'?e:JSON.stringify(e))}return r.json()}
 async function init(){try{const session=await api('/session');csrf=session.csrf;onLogin(session)}catch{}}
@@ -25,9 +26,9 @@ $('navRequests').onclick=()=>showSection('requests');
 $('navSettings').onclick=()=>showSection('settings');
 $('navUsers').onclick=()=>showSection('users');
 function onLogin(session){
- currentUser={id:session.user_id,email:session.email,legacy_login:session.legacy_login,is_admin:session.is_admin,display_name:session.display_name,can_delete_accounts:session.can_delete_accounts===true};
+ currentUser={id:session.user_id,email:session.email,legacy_login:session.legacy_login,is_admin:session.is_admin,role:session.role||'operator',display_name:session.display_name,can_delete_accounts:session.can_delete_accounts===true};
  $('login').classList.add('hidden');$('dashboard').classList.remove('hidden');
- $('whoAmI').textContent=(session.display_name||session.email||session.legacy_login)+(session.is_admin?' · Amministratore':' · Operatore');
+ $('whoAmI').textContent=(session.display_name||session.email||session.legacy_login)+(' · '+roleLabel(currentUser.role));
  document.querySelectorAll('.adminOnly').forEach(x=>x.classList.toggle('hidden',!session.is_admin));
  $('navUsers').classList.toggle('hidden',!currentUser.can_delete_accounts);
  showSection('requests');refresh();
@@ -160,7 +161,14 @@ async function loadUsers(){
      '</div><input type="email" class="userEmail" data-user="'+u.id+
      '" value="'+esc(u.email||'')+'" placeholder="email@cri.it" aria-label="Email per '+
      esc(u.display_name)+'"><button type="button" class="secondary saveEmail" data-user="'+u.id+
-     '">Salva email</button></td><td>'+esc(u.role==='admin'?'Amministratore':'Operatore')+
+     '">Salva email</button></td><td>'+
+     (u.role==='superadmin'
+       ?'<strong class="role-superadmin">Super Admin</strong><div class="muted">Ruolo riservato</div>'
+       :'<label class="sr-only" for="role-'+u.id+'">Ruolo di '+esc(u.display_name)+'</label>'+
+        '<select id="role-'+u.id+'" class="userRole" data-user="'+u.id+'" aria-label="Ruolo di '+esc(u.display_name)+'">'+
+        '<option value="operator"'+(u.role==='operator'?' selected':'')+'>Utente operatore</option>'+
+        '<option value="admin"'+(u.role==='admin'?' selected':'')+'>Admin</option></select>'+
+        '<button type="button" class="secondary saveRole" data-user="'+u.id+'">Salva ruolo</button>')+
      '</td><td><span class="'+(lockedManually||lockedAutomatically?'account-locked':'')+'">'+
      esc(state)+'</span><div class="muted">'+esc(attempts)+'</div></td><td>'+
      '<button type="button" class="secondary sendSetup" data-user="'+u.id+'"'+
@@ -170,6 +178,21 @@ async function loadUsers(){
       u.password_setup_required?'Reinvia link':'Invia reset password')+
      '</button></td><td>'+actions+'</td></tr>';
   }).join('');
+  document.querySelectorAll('.saveRole').forEach(b=>b.onclick=async()=>{
+   if(!currentUser.can_delete_accounts)return;
+   const id=Number(b.dataset.user),user=users.find(u=>u.id===id);
+   const selector=document.querySelector('.userRole[data-user="'+id+'"]');
+   if(!user||!selector||selector.value===user.role)return;
+   const role=selector.value;
+   if(!['admin','operator'].includes(role))return;
+   if(!confirm('Modificare il ruolo di '+user.display_name+' in '+roleLabel(role)+
+      '? Le sessioni aperte saranno revocate.'))return;
+   b.disabled=true;
+   try{
+     await api('/users/'+id+'/role','PUT',{role});
+     msg('Ruolo aggiornato: '+roleLabel(role)+'.');loadUsers();
+   }catch(err){msg(err.message,true)}finally{b.disabled=false}
+  });
   document.querySelectorAll('.saveEmail').forEach(b=>b.onclick=async()=>{
    const id=Number(b.dataset.user),input=document.querySelector('.userEmail[data-user="'+id+'"]');
    if(!input||!input.validity.valid||!input.value.trim()){msg('Indica un indirizzo email valido.',true);return}
@@ -258,11 +281,11 @@ $('deleteAccountForm').onsubmit=async e=>{
 
 $('newUserForm').onsubmit=async e=>{
  e.preventDefault();
- if(!currentUser.is_admin)return;
+ if(!currentUser.can_delete_accounts)return;
  const button=$('newUserSubmit');if(button.disabled)return;
  button.disabled=true;
  try{
-  const result=await api('/users','POST',{email:$('newEmail').value.trim(),display_name:$('newDisplayName').value});
+  const result=await api('/users','POST',{email:$('newEmail').value.trim(),display_name:$('newDisplayName').value,role:$('newRole').value});
   $('newUserForm').reset();
   msg(result.activation_status==='sent'?'Operatore creato: link di attivazione inviato via email (48 ore).':'Operatore creato, ma il link non è stato recapitato. Controlla SMTP e usa Reinvia link.',result.activation_status!=='sent');
   loadUsers();
