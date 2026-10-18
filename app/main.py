@@ -202,6 +202,44 @@ def session(request:Request):
 @app.post('/api/logout')
 def logout(request:Request,response:Response):
     require_admin(request);response.delete_cookie('cri_admin',secure=SECURE,samesite='strict');return {'ok':True}
+def send_invitation(request_id:int, recipient:str, url:str, days:int)->str:
+    """Send one-time invitation link; never log the bearer token."""
+    host=os.getenv('SMTP_HOST','').strip()
+    sender=os.getenv('SMTP_FROM','').strip()
+    user=os.getenv('SMTP_USER','').strip()
+    password=os.getenv('SMTP_PASSWORD','')
+    if not host or not sender:
+        return 'smtp_not_configured'
+    msg=EmailMessage()
+    msg['From']=sender
+    msg['To']=recipient
+    msg['Subject']='Croce Rossa Italiana – Compilazione richiesta assistenza sanitaria'
+    msg.set_content(
+        'Gentile organizzatore,\\n\\n'
+        'Per compilare la richiesta di assistenza sanitaria, aprire il collegamento personale:\\n'
+        +url+'\\n\\n'
+        +f'Il collegamento scade tra {days} giorni. Non inoltrarlo ad altre persone.\\n'
+        'Il Piano Sanitario sarà predisposto dalla CRI dopo la ricezione dei dati.\\n'
+        'Cordiali saluti.'
+    )
+    try:
+        port=int(os.getenv('SMTP_PORT','587'))
+        if os.getenv('SMTP_SSL','false').lower()=='true':
+            with smtplib.SMTP_SSL(host,port,timeout=20,context=ssl.create_default_context()) as smtp:
+                if user:smtp.login(user,password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host,port,timeout=20) as smtp:
+                smtp.starttls(context=ssl.create_default_context())
+                if user:smtp.login(user,password)
+                smtp.send_message(msg)
+    except Exception as exc:
+        logger.warning('Invitation send failed request=%d type=%s',request_id,type(exc).__name__)
+        with db() as c:audit(c,request_id,'invitation_failed')
+        return 'failed'
+    with db() as c:audit(c,request_id,'invitation_sent')
+    return 'sent'
+
 @app.post('/api/requests')
 def create(request:Request,body:Create):
     require_admin(request)
@@ -210,7 +248,9 @@ def create(request:Request,body:Create):
         params={'h':digest(token),'email':str(body.customer_email),'created':iso(),'expires':(now()+timedelta(days=body.days)).isoformat(timespec='seconds')}
         id=c.execute(text("INSERT INTO requests(token_hash,customer_email,created_at,expires_at,status,payload,notes) VALUES(:h,:email,:created,:expires,'pending','{}','') RETURNING id"),params).scalar_one()
         audit(c,id,'created')
-    return {'id':id,'url':f'{PUBLIC_BASE_URL}/r/{token}','expires_in_days':body.days}
+    link=f'{PUBLIC_BASE_URL}/r/{token}'
+    invitation_status=send_invitation(id,str(body.customer_email),link,body.days)
+    return {'id':id,'url':link,'expires_in_days':body.days,'invitation_status':invitation_status}
 @app.get('/r/{token}')
 def external(token:str):
     get_token_record(token);return FileResponse(BASE/'static'/'form.html')
