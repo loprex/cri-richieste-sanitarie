@@ -355,7 +355,7 @@ def build_report_recipients(request_row,configured:str):
         admins=[record['email'] for record in c.execute(text("""SELECT email
           FROM app_users WHERE role='admin' AND active=TRUE AND email IS NOT NULL
           AND password_setup_required=FALSE""")).mappings()]
-        creator=fetchone(c,'SELECT email FROM app_users WHERE id=:id AND active=TRUE AND password_setup_required=FALSE',
+        creator=fetchone(c,'SELECT email FROM app_users WHERE id=:id AND active=TRUE',
                          {'id':request_row['owner_user_id']}) if request_row.get('owner_user_id') else None
     configured=[x.strip() for x in re.split(r'[,;\n]',configured) if x.strip()]
     # Always notify the official CRI Venezia administrative mailbox for a
