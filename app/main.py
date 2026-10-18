@@ -328,8 +328,8 @@ def external(token:str):
             return HTMLResponse("""<!doctype html><html lang="it"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Collegamento non disponibile | CRI Venezia</title>
-<link rel="icon" type="image/png" href="/static/logo-cri-venezia.png"><link rel="stylesheet" href="/static/style.css"></head><body>
-<header><img class="cri-logo" src="/static/logo-cri-venezia.png" alt="Croce Rossa Italiana – Comitato di Venezia"><div><div class="brand">Croce Rossa Italiana – Comitato di Venezia</div></div></header>
+<link rel="icon" type="image/svg+xml" href="/static/logo-cri-venezia.svg"><link rel="stylesheet" href="/static/style.css"></head><body>
+<header><img class="cri-logo" src="/static/logo-cri-venezia.svg" alt="Croce Rossa Italiana – Comitato di Venezia"><div><div class="brand">Croce Rossa Italiana – Comitato di Venezia</div></div></header>
 <main><section class="panel" role="alert">
 <h1>Il link è scaduto oppure è stato revocato da CRI Venezia</h1>
 <p>Contatta <strong>CRI VENEZIA</strong> al numero
