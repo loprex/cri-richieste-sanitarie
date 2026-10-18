@@ -168,6 +168,19 @@ with db() as c:
         c.execute(text("""INSERT INTO audit(request_id,action,created_at)
            VALUES(NULL,:action,:at)"""),
           {'action':'secondary_admin_granted_'+str(secondary['id']),'at':iso()})
+    elif not secondary:
+        # Create a pending, passwordless administrator account only for the
+        # explicitly designated mailbox. Admin sends a one-use activation link.
+        c.execute(text("""INSERT INTO app_users
+          (username,email,display_name,password_hash,role,active,
+           auth_version,created_at,password_setup_required)
+          VALUES(:username,:email,:display_name,'!','admin',TRUE,:version,:at,TRUE)"""),
+          {'username':'account-'+secrets.token_hex(12),'email':ADDITIONAL_ADMIN_EMAIL,
+           'display_name':'Amministrazione CRI Venezia',
+           'version':secrets.token_hex(16),'at':iso()})
+        c.execute(text("""INSERT INTO audit(request_id,action,created_at)
+          VALUES(NULL,:action,:at)"""),
+          {'action':'designated_admin_account_created_pending_activation','at':iso()})
 
 def audit(c,id,action):c.execute(text('INSERT INTO audit(request_id,action,created_at) VALUES(:id,:action,:at)'),{'id':id,'action':action,'at':iso()})
 def sign(v):return hmac.new(SESSION_SECRET.encode(),v.encode(),hashlib.sha256).hexdigest()
@@ -326,42 +339,59 @@ def plan_filename(request_row, draft=True):
     safe=re.sub(r'[^A-Za-z0-9_-]','-',str(protocol))[:70] if protocol else f'senza_protocollo_{request_row["id"]}'
     return f'piano_sanitario_{"bozza_" if draft else ""}{compact}_{safe}.xlsx'
 
+def mail_blocked(id:int,reason:str)->str:
+    """Store a human-readable configuration state without discarding the submitted request."""
+    with db() as c:
+        c.execute(text('UPDATE requests SET mail_error=:reason WHERE id=:id'),{
+            'reason':reason,'id':id})
+        audit(c,id,'mail_blocked_'+reason)
+    return reason
+
+def build_report_recipients(request_row,configured:str):
+    """Deduplicate internal recipients. Never copy the organizer/customer mailbox."""
+    with db() as c:
+        admins=[record['email'] for record in c.execute(text("""SELECT email
+          FROM app_users WHERE role='admin' AND active=TRUE AND email IS NOT NULL
+          AND password_setup_required=FALSE""")).mappings()]
+        creator=fetchone(c,'SELECT email FROM app_users WHERE id=:id AND active=TRUE AND password_setup_required=FALSE',
+                         {'id':request_row['owner_user_id']}) if request_row.get('owner_user_id') else None
+    configured=[x.strip() for x in re.split(r'[,;\n]',configured) if x.strip()]
+    candidates=configured+admins+([creator['email']] if creator and creator.get('email') else [])
+    seen=set()
+    recipients=[]
+    for value in candidates:
+        value=value.strip()
+        if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',value):continue
+        normalized=value.casefold()
+        if normalized in seen:continue
+        seen.add(normalized)
+        recipients.append(value)
+    return recipients
+
 def mail_request(id,request_data,force=False):
     with db() as c:
         r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
         if not r or r['status'] not in ('submitted','approved'):return 'not_submitted'
         if r['mailed_at'] and not force:return 'already_sent'
         enabled=get_setting(c,'mail_enabled','false')=='true'
-        rec=get_setting(c,'mail_recipients','')
+        configured=get_setting(c,'mail_recipients','')
         subject=get_setting(c,'mail_subject','Piano Sanitario CRI - protocollo {protocol} - {event}')
         body=get_setting(c,'mail_body','Nuova richiesta sanitaria per {event}. Documento da verificare e approvare.')
-        # Explicit administrative recipients + all active administrators with email.
-        admins=[x['email'] for x in c.execute(text("""SELECT email FROM app_users
-            WHERE role='admin' AND active=TRUE AND email IS NOT NULL""")).mappings()]
-        creator=fetchone(c,'SELECT email FROM app_users WHERE id=:id AND active=TRUE',
-                         {'id':r['owner_user_id']}) if r.get('owner_user_id') else None
-    if not enabled:return 'disabled'
-    configured=[x.strip() for x in re.split(r'[,;\n]',rec) if x.strip()]
-    admins=configured+admins
-    if not admins:return 'admin_recipient_missing'
-    if r.get('owner_user_id') is not None and (not creator or not creator.get('email')):
-        return 'creator_email_missing'
-    # Historical requests without an owner can still be sent to admin recipients.
-    recipient_candidates=admins+([creator['email']] if creator and creator.get('email') else [])
-    # Avoid duplicate emails and header injection; retain first occurrence.
-    recipients=list(dict((x.casefold(),x) for x in recipient_candidates
-                         if re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',x.strip())).values())
-    if not recipients:return 'no_recipients'
+    if not enabled:return mail_blocked(id,'disabled')
+    recipients=build_report_recipients(r,configured)
+    if not recipients:return mail_blocked(id,'no_recipients')
     host=os.getenv('SMTP_HOST','').strip()
     port=int(os.getenv('SMTP_PORT','587'))
     sender=os.getenv('SMTP_FROM','').strip()
-    user=os.getenv('SMTP_USER','').strip()
+    smtp_user=os.getenv('SMTP_USER','').strip()
     password=os.getenv('SMTP_PASSWORD','')
-    if not host or not sender:return 'smtp_not_configured'
+    if not host or not sender:return mail_blocked(id,'smtp_not_configured')
     protocol=r.get('protocol_number') or 'Non assegnato (richiesta storica)'
-    date=r.get('protocol_at') or r.get('submitted_at') or ''
+    submitted_at=r.get('protocol_at') or r.get('submitted_at') or ''
+    admin_link=f'{PUBLIC_BASE_URL}/?request={id}'
     label={'id':id,'event':request_data.get('event_name',''),
-           'organizer':request_data.get('org_name',''),'protocol':protocol,'protocol_date':date}
+           'organizer':request_data.get('org_name',''),'protocol':protocol,
+           'protocol_date':submitted_at,'request_link':admin_link}
     def fmt(template):
         for key,value in label.items():template=template.replace('{'+key+'}',str(value))
         return template
@@ -371,31 +401,49 @@ def mail_request(id,request_data,force=False):
     msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
     msg['To']=', '.join(recipients)
     msg['Subject']=message_subject
-    msg.set_content(fmt(body)+'\n\nProtocollo interno: '+protocol+
-       '\nData registrazione: '+date+
-       '\nDocumento allegato: Piano Sanitario precompilato, BOZZA NON APPROVATA dalla CRI.')
-    document=render_excel(BASE/'templates'/'piano_sanitario_2026.xlsx',request_data)
-    msg.add_attachment(document,maintype='application',
-      subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      filename=plan_filename(r))
+    text_body=(fmt(body)+'\n\nProtocollo interno: '+protocol+
+      '\nData registrazione: '+submitted_at+
+      '\nApri richiesta nell’area riservata CRI: '+admin_link+
+      '\n\nAllegato: Piano Sanitario Excel precompilato (BOZZA NON APPROVATA).'+
+      '\nIl collegamento richiede l’accesso con un account CRI autorizzato.')
+    msg.set_content(text_body)
+    msg.add_alternative(
+      '<!doctype html><html lang="it"><body style="font-family:Arial,sans-serif;color:#17212d">'
+      '<h2 style="color:#a71930">CRI Venezia – nuova richiesta sanitaria compilata</h2>'
+      '<p>'+html.escape(fmt(body)).replace('\n','<br>')+'</p>'
+      '<p><strong>Evento:</strong> '+html.escape(str(label['event']))+'</p>'
+      '<p><strong>Protocollo interno:</strong> '+html.escape(str(protocol))+'</p>'
+      '<p><strong>Data registrazione:</strong> '+html.escape(str(submitted_at))+'</p>'
+      '<p><a href="'+html.escape(admin_link,quote=True)+'" '
+      'style="display:inline-block;padding:12px 18px;background:#b5162e;color:#fff;'
+      'text-decoration:none;border-radius:6px">Apri richiesta nell’area CRI</a></p>'
+      '<p>Il link richiede l’accesso con un account autorizzato.</p>'
+      '<p><strong>Allegato:</strong> Piano Sanitario Excel – bozza da verificare.</p>'
+      '</body></html>',subtype='html')
+    try:
+        document=render_excel(BASE/'templates'/'piano_sanitario_2026.xlsx',request_data)
+        msg.add_attachment(document,maintype='application',
+          subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          filename=plan_filename(r))
+    except Exception as exc:
+        logger.error('Excel attachment generation failed request=%d type=%s',id,type(exc).__name__)
+        return mail_blocked(id,'excel_generation_failed')
     try:
         if os.getenv('SMTP_SSL','false').lower()=='true':
             with smtplib.SMTP_SSL(host,port,timeout=20,context=ssl.create_default_context()) as smtp:
-                if user:smtp.login(user,password)
+                if smtp_user:smtp.login(smtp_user,password)
                 smtp.send_message(msg)
         else:
             with smtplib.SMTP(host,port,timeout=20) as smtp:
                 smtp.starttls(context=ssl.create_default_context())
-                if user:smtp.login(user,password)
+                if smtp_user:smtp.login(smtp_user,password)
                 smtp.send_message(msg)
     except Exception as exc:
         logger.warning('Email delivery failed request=%d type=%s',id,type(exc).__name__)
-        with db() as c:
-            c.execute(text('UPDATE requests SET mail_error=:err WHERE id=:id'),{'err':type(exc).__name__,'id':id})
-            audit(c,id,'mail_failed')
-        return 'failed'
+        return mail_blocked(id,'smtp_send_failed')
     with db() as c:
-        c.execute(text('UPDATE requests SET mailed_at=:at,mail_error=NULL WHERE id=:id'),{'at':iso(),'id':id})
+        c.execute(text('UPDATE requests SET mailed_at=:at,mail_error=NULL WHERE id=:id'),
+                  {'at':iso(),'id':id})
         audit(c,id,'mail_sent')
     return 'sent'
 
