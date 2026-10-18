@@ -81,7 +81,8 @@ async function loadMail(){try{
  $('recipients').value=cfg.recipients;$('subject').value=cfg.subject;
  $('body').value=cfg.body;$('enabled').checked=cfg.enabled;
  $('smtpStatus').textContent=(cfg.smtp_ready?'SMTP configurato':'SMTP NON configurato in Coolify')+
-   ' · '+(cfg.enabled?'Invio automatico attivo':'Invio automatico DISATTIVATO: nessuna notifica alla compilazione');
+   ' · '+(cfg.enabled?'Invio automatico attivo':'Invio automatico DISATTIVATO: nessuna notifica alla compilazione')+
+   (cfg.administration_mail_paused?' · amministrazione@crivenezia.it: INVIO SOSPESO FINO ALLA PRODUZIONE':'');
  if(!$('testEmail').value){
    $('testEmail').value=currentUser.email||
      (cfg.recipients||'').split(/[,;\n]/).map(x=>x.trim()).find(Boolean)||'';
