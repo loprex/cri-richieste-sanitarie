@@ -753,7 +753,7 @@ def activate_user(token:str,body:SetPassword):
 
 @app.get('/api/users')
 def get_users(request:Request):
-    require_admin(request)
+    require_account_deletion_owner(request)
     with db() as c:
         rows=c.execute(text("""SELECT id,email,username,display_name,role,active,created_at,
             password_setup_required,setup_expires_at,failed_login_attempts,auto_locked_at
@@ -761,7 +761,7 @@ def get_users(request:Request):
     return [dict(row) for row in rows]
 @app.post('/api/users')
 def create_user(body:NewOperator,request:Request):
-    require_admin(request)
+    require_account_deletion_owner(request)
     if not os.getenv('SMTP_HOST','').strip() or not os.getenv('SMTP_FROM','').strip():
         raise HTTPException(503,'Configura SMTP prima di creare gli account')
     email=str(body.email).strip().lower()
@@ -785,8 +785,10 @@ def create_user(body:NewOperator,request:Request):
 
 @app.put('/api/users/{id}/email')
 def set_user_email(id:int,body:UpdateOperatorEmail,request:Request):
-    require_admin(request)
+    owner=require_account_deletion_owner(request)
     email=str(body.email).strip().lower()
+    if id==owner['id'] and email!=OWNER_DELETE_EMAIL:
+        raise HTTPException(409,'L’email dell’amministratore principale è protetta: richiede una modifica tecnica controllata')
     with db() as c:
         user=fetchone(c,'SELECT id,email FROM app_users WHERE id=:id',{'id':id})
         if not user:raise HTTPException(404,'Utente non trovato')
@@ -806,14 +808,14 @@ def set_user_email(id:int,body:UpdateOperatorEmail,request:Request):
 
 @app.post('/api/users/{id}/send-setup')
 def resend_password_setup(id:int,request:Request):
-    require_admin(request)
+    require_account_deletion_owner(request)
     to,name,link=setup_link_for_user(id)
     outcome=send_password_setup(to,name,link)
     return {'ok':True,'activation_status':outcome,'sessions_revoked':True}
 
 @app.put('/api/users/{id}/status')
 def set_user_status(id:int,body:OperatorStatus,request:Request):
-    admin=require_admin(request)
+    admin=require_account_deletion_owner(request)
     if admin['id']==id:raise HTTPException(409,'Non puoi disattivare il tuo account amministratore')
     with db() as c:
         user=fetchone(c,'SELECT id FROM app_users WHERE id=:id',{'id':id})
@@ -865,7 +867,7 @@ def delete_user(id:int,body:DeleteUserRequest,request:Request):
 
 @app.post('/api/users/{id}/unlock')
 def unlock_user(id:int,request:Request):
-    admin=require_admin(request)
+    admin=require_account_deletion_owner(request)
     with db() as c:
         user=fetchone(c,'SELECT id,active,auto_locked_at FROM app_users WHERE id=:id',{'id':id})
         if not user:raise HTTPException(404,'Utente non trovato')
