@@ -1,5 +1,6 @@
 import os, secrets, hashlib, hmac, json, re, io, smtplib, ssl, html, logging, threading, time
 from email.message import EmailMessage
+from email.utils import formataddr
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
@@ -211,16 +212,24 @@ def send_invitation(request_id:int, recipient:str, url:str, days:int)->str:
     if not host or not sender:
         return 'smtp_not_configured'
     msg=EmailMessage()
-    msg['From']=sender
+    msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
     msg['To']=recipient
-    msg['Subject']='Croce Rossa Italiana – Compilazione richiesta assistenza sanitaria'
+    msg['Subject']='CRI Venezia - Compilazione richiesta di assistenza sanitaria'
     msg.set_content(
         'Gentile organizzatore,\n\n'
-        'Per compilare la richiesta di assistenza sanitaria, aprire il collegamento personale:\n'
+        'ricevi questa email in merito alla tua richiesta di supporto sanitario '
+        'effettuata presso il Comitato della Croce Rossa Italiana di Venezia.\n\n'
+        'Ti preghiamo di compilare il modulo online attraverso il collegamento '
+        'personale riportato di seguito. Le informazioni raccolte ci permetteranno '
+        'di predisporre il Piano Sanitario di valutazione relativo al tuo evento.\n\n'
         +url+'\n\n'
-        +f'Il collegamento scade tra {days} giorni. Non inoltrarlo ad altre persone.\n'
-        'Il Piano Sanitario sarà predisposto dalla CRI dopo la ricezione dei dati.\n'
-        'Cordiali saluti.'
+        +f'Il collegamento sarà valido per {days} giorni dalla creazione della richiesta. '
+        'Ti invitiamo a non condividerlo con persone non autorizzate.\n\n'
+        'La compilazione del modulo non costituisce conferma o approvazione del '
+        'servizio richiesto; il Piano Sanitario sarà sottoposto alle verifiche della CRI.\n\n'
+        'Cordiali saluti,\n'
+        'Croce Rossa Italiana - Comitato di Venezia\n'
+        'Messaggio automatico: non rispondere a questa email per trasmettere dati sensibili.'
     )
     try:
         port=int(os.getenv('SMTP_PORT','587'))
