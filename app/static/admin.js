@@ -22,7 +22,7 @@ $('navRequests').onclick=()=>showSection('requests');
 $('navSettings').onclick=()=>showSection('settings');
 $('navUsers').onclick=()=>showSection('users');
 function onLogin(session){
- currentUser={email:session.email,legacy_login:session.legacy_login,is_admin:session.is_admin,display_name:session.display_name};
+ currentUser={id:session.user_id,email:session.email,legacy_login:session.legacy_login,is_admin:session.is_admin,display_name:session.display_name};
  $('login').classList.add('hidden');$('dashboard').classList.remove('hidden');
  $('whoAmI').textContent=(session.display_name||session.email||session.legacy_login)+(session.is_admin?' · Amministratore':' · Operatore');
  document.querySelectorAll('.adminOnly').forEach(x=>x.classList.toggle('hidden',!session.is_admin));
@@ -88,7 +88,7 @@ async function loadUsers(){
     await api('/users/'+id+'/email','PUT',{email:input.value.trim()});
     const current=users.find(u=>u.id===id);
     msg('Email operatore aggiornata.');
-    if(current&&(current.email===currentUser.email||(current.username===currentUser.legacy_login&&currentUser.legacy_login))){location.reload();return}
+    if(current&&current.id===currentUser.id){location.reload();return}
     loadUsers();
    }catch(err){msg(err.message,true)}
   });
@@ -100,7 +100,7 @@ async function loadUsers(){
     await api('/users/'+id+'/password','PUT',{password:input.value});input.value='';
     msg('Password aggiornata. Comunicala con un canale riservato.');
     const target=users.find(u=>u.id===id);
-    if(target&&(target.email===currentUser.email||(target.username===currentUser.legacy_login&&currentUser.legacy_login))){location.reload();return}
+    if(target&&target.id===currentUser.id){location.reload();return}
    }catch(err){msg(err.message,true)}
   });
   document.querySelectorAll('.statusButton').forEach(b=>b.onclick=async()=>{
