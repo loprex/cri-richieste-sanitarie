@@ -308,9 +308,10 @@ def mail_request(id,request_data,force=False):
     configured=[x.strip() for x in re.split(r'[,;\n]',rec) if x.strip()]
     admins=configured+admins
     if not admins:return 'admin_recipient_missing'
-    if not creator or not creator.get('email'):
+    if r.get('owner_user_id') is not None and (not creator or not creator.get('email')):
         return 'creator_email_missing'
-    recipient_candidates=admins+[creator['email']]
+    # Historical requests without an owner can still be sent to admin recipients.
+    recipient_candidates=admins+([creator['email']] if creator and creator.get('email') else [])
     # Avoid duplicate emails and header injection; retain first occurrence.
     recipients=list(dict((x.casefold(),x) for x in recipient_candidates
                          if re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',x.strip())).values())
