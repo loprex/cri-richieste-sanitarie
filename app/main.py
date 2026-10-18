@@ -456,7 +456,7 @@ def set_user_status(id:int,body:OperatorStatus,request:Request):
         audit(c,None,('user_enabled_' if body.active else 'user_disabled_')+str(id))
     return {'ok':True}
 
-def send_invitation(request_id:int, recipient:str, url:str, days:int)->str:
+def send_invitation(request_id:int, recipient:str, url:str, days:int, event_name:str='', event_city:str='')->str:
     """Send one-time invitation link; never log the bearer token."""
     host=os.getenv('SMTP_HOST','').strip()
     sender=os.getenv('SMTP_FROM','').strip()
@@ -470,7 +470,8 @@ def send_invitation(request_id:int, recipient:str, url:str, days:int)->str:
     msg['Subject']='CRI Venezia - Compilazione richiesta di assistenza sanitaria'
     msg.set_content(
         'Gentile organizzatore,\n\n'
-        'ricevi questa email in merito alla tua richiesta di supporto sanitario '
+        +f'Evento: {event_name} – {event_city}.\n\n'
+        +'ricevi questa email in merito alla tua richiesta di supporto sanitario '
         'effettuata presso il Comitato della Croce Rossa Italiana di Venezia.\n\n'
         'Ti preghiamo di compilare il modulo online attraverso il collegamento '
         'personale riportato di seguito. Le informazioni raccolte ci permetteranno '
@@ -514,7 +515,7 @@ def create(request:Request,body:Create):
         id=c.execute(text("INSERT INTO requests(token_hash,customer_email,created_at,expires_at,status,payload,notes,owner_user_id,planned_event_name,planned_event_city) VALUES(:h,:email,:created,:expires,'pending','{}','',:owner,:event_name,:event_city) RETURNING id"),params).scalar_one()
         audit(c,id,'created')
     link=f'{PUBLIC_BASE_URL}/r/{token}'
-    invitation_status=send_invitation(id,str(body.customer_email),link,body.days)
+    invitation_status=send_invitation(id,str(body.customer_email),link,body.days,body.event_name,body.event_city)
     return {'id':id,'url':link,'expires_in_days':body.days,'invitation_status':invitation_status,'event_name':body.event_name,'event_city':body.event_city}
 @app.get('/r/{token}')
 def external(token:str,request:Request):
