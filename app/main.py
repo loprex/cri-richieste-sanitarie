@@ -131,7 +131,8 @@ for table,additions in (
                   'auto_locked_at':'TEXT',
                   'reset_token_hash':'VARCHAR(64)',
                   'reset_expires_at':'TEXT',
-                  'reset_requested_at':'TEXT'}),
+                  'reset_requested_at':'TEXT',
+                  'last_login_at':'TEXT'}),
     ('requests',{'planned_event_name':'VARCHAR(250)',
                  'planned_event_city':'VARCHAR(160)',
                  'protocol_number':'VARCHAR(50)',
@@ -587,11 +588,12 @@ def login(body:Login,response:Response,request:Request):
     with db() as c:
         # In case a parallel request locked the account while checking PBKDF2,
         # only an active, unlocked account may receive a fresh session.
-        fresh=fetchone(c,"""UPDATE app_users SET failed_login_attempts=0
+        fresh=fetchone(c,"""UPDATE app_users SET failed_login_attempts=0,
+              last_login_at=:login_at
           WHERE id=:id AND active=TRUE AND auto_locked_at IS NULL
             AND password_setup_required=FALSE AND auth_version=:version
           RETURNING id,email,username,display_name,role,auth_version""",
-          {'id':user['id'],'version':user['auth_version']})
+          {'id':user['id'],'version':user['auth_version'],'login_at':iso()})
     if not fresh:
         raise HTTPException(423,'Accesso non consentito: account bloccato o sessione revocata.')
     with _LOGIN_LOCK:_LOGIN_ATTEMPTS.pop(ip,None)
@@ -789,8 +791,8 @@ def get_users(request:Request):
     require_account_deletion_owner(request)
     with db() as c:
         rows=c.execute(text("""SELECT id,email,username,display_name,role,active,created_at,
-            password_setup_required,setup_expires_at,failed_login_attempts,auto_locked_at
-            FROM app_users ORDER BY id""")).mappings().all()
+            password_setup_required,setup_expires_at,failed_login_attempts,auto_locked_at,
+            last_login_at FROM app_users ORDER BY id""")).mappings().all()
     return [dict(row) for row in rows]
 @app.post('/api/users')
 def create_user(body:NewOperator,request:Request):
