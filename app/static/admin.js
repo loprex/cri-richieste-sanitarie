@@ -159,8 +159,11 @@ async function loadUsers(){
      '">Salva email</button></td><td>'+esc(u.role==='admin'?'Amministratore':'Operatore')+
      '</td><td><span class="'+(lockedManually||lockedAutomatically?'account-locked':'')+'">'+
      esc(state)+'</span><div class="muted">'+esc(attempts)+'</div></td><td>'+
-     '<button type="button" class="secondary sendSetup" data-user="'+u.id+'">'+
-     (u.password_setup_required?'Reinvia link':'Invia reset password')+
+     '<button type="button" class="secondary sendSetup" data-user="'+u.id+'"'+
+     (lockedManually?' disabled title="Sblocca prima l’account"':'')+'>'+
+     (u.email?.toLowerCase()==='amministrazione@crivenezia.it'?'Invia link (solo se email abilitata)':
+      lockedManually?'Sblocca prima l’account':
+      u.password_setup_required?'Reinvia link':'Invia reset password')+
      '</button></td><td>'+actions+'</td></tr>';
   }).join('');
   document.querySelectorAll('.saveEmail').forEach(b=>b.onclick=async()=>{
