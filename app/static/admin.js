@@ -33,6 +33,29 @@ function onLogin(session){
  if(requestedId&&/^[1-9][0-9]{0,8}$/.test(requestedId))openDetail(Number(requestedId));
 }
 $('loginForm').onsubmit=async e=>{e.preventDefault();try{let r=await api('/login','POST',{email:$('username').value,password:$('password').value});csrf=r.csrf;$('password').value='';onLogin(r)}catch(err){msg(err.message,true)}};
+$('showForgotPassword').onclick=()=>{
+ const panel=$('forgotPasswordPanel');
+ const opened=panel.classList.contains('hidden');
+ panel.classList.toggle('hidden',!opened);
+ $('showForgotPassword').setAttribute('aria-expanded',String(opened));
+ if(opened){
+   $('forgotPasswordEmail').value=$('username').value.includes('@')?$('username').value:'';
+   $('forgotPasswordEmail').focus();
+ }
+};
+$('forgotPasswordForm').onsubmit=async e=>{
+ e.preventDefault();
+ const button=$('forgotPasswordSubmit');
+ if(button.disabled)return;
+ button.disabled=true;
+ $('forgotPasswordStatus').textContent='Elaborazione richiesta in corso…';
+ try{
+  const result=await api('/password/forgot','POST',{email:$('forgotPasswordEmail').value.trim()});
+  $('forgotPasswordStatus').textContent=result.message;
+ }catch(err){
+  $('forgotPasswordStatus').textContent='Impossibile completare la richiesta. Riprova più tardi.';
+ }finally{button.disabled=false}
+};
 $('logout').onclick=async()=>{try{await api('/logout','POST',{})}finally{location.reload()}};
 $('createForm').onsubmit=async e=>{
  e.preventDefault();
@@ -114,7 +137,32 @@ async function loadUsers(){
  if(!currentUser.is_admin)return;
  try{
   const users=await api('/users');
-  $('usersList').innerHTML=users.map(u=>'<tr><td><b>'+esc(u.display_name)+'</b><div class="muted">'+esc(u.email||'Email da configurare (accesso temporaneo: '+u.username+')')+'</div><input type="email" class="userEmail" data-user="'+u.id+'" value="'+esc(u.email||'')+'" placeholder="email@cri.it" aria-label="Email per '+esc(u.display_name)+'"><button type="button" class="secondary saveEmail" data-user="'+u.id+'">Salva email</button></td><td>'+esc(u.role==='admin'?'Amministratore':'Operatore')+'</td><td>'+esc(u.password_setup_required?'In attesa di password':u.active?'Attivo':'Disattivato')+'</td><td><button type="button" class="secondary sendSetup" data-user="'+u.id+'">'+(u.password_setup_required?'Reinvia link':'Invia reset password')+'</button></td><td>'+(u.role==='admin'?'—':'<button type="button" class="secondary statusButton" data-user="'+u.id+'" data-active="'+String(u.active)+'">'+(u.active?'Disattiva':'Riattiva')+'</button>')+'</td></tr>').join('');
+  $('usersList').innerHTML=users.map(u=>{
+   const self=Number(u.id)===Number(currentUser.id);
+   const lockedManually=!u.active;
+   const lockedAutomatically=!!u.auto_locked_at;
+   const state=lockedManually?'Bloccato manualmente':
+     lockedAutomatically?'Bloccato dopo 3 errori':
+     u.password_setup_required?'In attesa di password':'Attivo';
+   const attempts=lockedManually||lockedAutomatically?'':(' · '+(u.failed_login_attempts||0)+'/3 errori');
+   const actions=self?'Account in uso':
+     '<button type="button" class="secondary statusButton" data-user="'+u.id+
+     '" data-active="'+String(u.active)+'">'+(lockedManually?'Sblocca accesso':'Blocca accesso')+'</button>'+
+     (lockedAutomatically&&u.active?
+      ' <button type="button" class="secondary unlockButton" data-user="'+u.id+
+      '">Sblocca dopo errori</button>':'');
+   return '<tr><td><b>'+esc(u.display_name)+'</b><div class="muted">'+
+     esc(u.email||'Email da configurare (accesso temporaneo: '+u.username+')')+
+     '</div><input type="email" class="userEmail" data-user="'+u.id+
+     '" value="'+esc(u.email||'')+'" placeholder="email@cri.it" aria-label="Email per '+
+     esc(u.display_name)+'"><button type="button" class="secondary saveEmail" data-user="'+u.id+
+     '">Salva email</button></td><td>'+esc(u.role==='admin'?'Amministratore':'Operatore')+
+     '</td><td><span class="'+(lockedManually||lockedAutomatically?'account-locked':'')+'">'+
+     esc(state)+'</span><div class="muted">'+esc(attempts)+'</div></td><td>'+
+     '<button type="button" class="secondary sendSetup" data-user="'+u.id+'">'+
+     (u.password_setup_required?'Reinvia link':'Invia reset password')+
+     '</button></td><td>'+actions+'</td></tr>';
+  }).join('');
   document.querySelectorAll('.saveEmail').forEach(b=>b.onclick=async()=>{
    const id=Number(b.dataset.user),input=document.querySelector('.userEmail[data-user="'+id+'"]');
    if(!input||!input.validity.valid||!input.value.trim()){msg('Indica un indirizzo email valido.',true);return}
@@ -139,8 +187,22 @@ async function loadUsers(){
   });
   document.querySelectorAll('.statusButton').forEach(b=>b.onclick=async()=>{
    const id=Number(b.dataset.user),active=b.dataset.active==='true';
-   if(!confirm(active?'Disattivare account e sessioni?':'Riattivare account?'))return;
-   try{await api('/users/'+id+'/status','PUT',{active:!active});msg('Stato account aggiornato.');loadUsers()}catch(e){msg(e.message,true)}
+   if(!confirm(active?'Bloccare manualmente questo account e revocare tutte le sessioni?':'Sbloccare questo account e consentire nuovamente l’accesso?'))return;
+   b.disabled=true;
+   try{
+    await api('/users/'+id+'/status','PUT',{active:!active});
+    msg(active?'Account bloccato manualmente.':'Account sbloccato.');
+    loadUsers();
+   }catch(e){msg(e.message,true)}finally{b.disabled=false}
+  });
+  document.querySelectorAll('.unlockButton').forEach(b=>b.onclick=async()=>{
+   const id=Number(b.dataset.user);
+   if(!confirm('Azzera i 3 errori e sblocca questo account? Le sessioni precedenti rimarranno revocate.'))return;
+   b.disabled=true;
+   try{
+    await api('/users/'+id+'/unlock','POST',{});
+    msg('Blocco automatico rimosso.');loadUsers();
+   }catch(e){msg(e.message,true)}finally{b.disabled=false}
   });
  }catch(err){msg(err.message,true)}
 }
