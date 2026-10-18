@@ -26,8 +26,8 @@ SESSION_SECRET=os.getenv('SESSION_SECRET','')
 PUBLIC_BASE_URL=os.getenv('PUBLIC_BASE_URL','http://localhost:8000').rstrip('/')
 SECURE=os.getenv('COOKIE_SECURE','true').lower()=='true'
 ADDITIONAL_ADMIN_EMAIL='amministrazione@crivenezia.it'
-# Deletion permission is bound to the original bootstrap account AND its verified email.
-# Other admins may manage accounts but never delete them.
+# Only the original bootstrap identity may be Super Admin and manage accounts.
+# Other admins manage requests and operational email settings, not users.
 OWNER_DELETE_EMAIL='giuseppe.lopresti@veneto.cri.it'
 # Fail closed: TEST and staging must not contact the official administration mailbox.
 # Both explicit production environment and opt-in are necessary to reactivate.
@@ -179,6 +179,18 @@ with db() as c:
           NOT EXISTS(SELECT 1 FROM app_users WHERE email=:email)"""),
           {'email':bootstrap_email})
 
+# Upgrade the original personal administrator to Super Admin, without changing
+# its password or allocating this privileged role to another user.
+with db() as c:
+    bootstrap=fetchone(c,"""SELECT id,role FROM app_users WHERE username='admin'
+        AND LOWER(TRIM(email))=:email""",{'email':OWNER_DELETE_EMAIL})
+    if bootstrap and bootstrap['role']!='superadmin':
+        c.execute(text("""UPDATE app_users SET role='superadmin',auth_version=:version
+           WHERE id=:id"""),{'version':secrets.token_hex(16),'id':bootstrap['id']})
+        c.execute(text("""INSERT INTO audit(request_id,action,created_at)
+          VALUES(NULL,:action,:at)"""),
+          {'action':'superadmin_promoted_'+str(bootstrap['id']),'at':iso()})
+
 # Reconcile the requested second CRI administrator on deployment. Existing
 # accounts must be active and have completed the personal email setup before
 # they can sign in; upgrading the role never bypasses activation.
@@ -229,24 +241,25 @@ def require_user(req:Request):
     return dict(user,csrf=sign('csrf:'+value))
 def require_admin(req:Request):
     user=require_user(req)
-    if user['role']!='admin':raise HTTPException(403,'Solo amministratore')
+    if user['role'] not in ('admin','superadmin'):
+        raise HTTPException(403,'Solo amministratore')
     return user
 def can_delete_accounts(user)->bool:
-    return bool(user and user.get('role')=='admin'
+    return bool(user and user.get('role')=='superadmin'
         and user.get('username')=='admin'
         and (user.get('email') or '').strip().casefold()==OWNER_DELETE_EMAIL)
 
 def require_account_deletion_owner(req:Request):
     user=require_admin(req)
     if not can_delete_accounts(user):
-        raise HTTPException(403,'Solo l’amministratore principale Lopresti può eliminare account')
+        raise HTTPException(403,'Solo il Super Admin Lopresti può gestire gli account')
     return user
 
 def require_request_access(req:Request,request_id:int):
     user=require_user(req)
     with db() as c:r=fetchone(c,'SELECT owner_user_id FROM requests WHERE id=:id',{'id':request_id})
     if not r:raise HTTPException(404,'Richiesta inesistente')
-    if user['role']!='admin' and r['owner_user_id']!=user['id']:
+    if user['role'] not in ('admin','superadmin') and r['owner_user_id']!=user['id']:
         raise HTTPException(404,'Richiesta inesistente')
     return user
 
@@ -278,6 +291,8 @@ class SetPassword(BaseModel):
     password:str=Field(min_length=12,max_length=256)
 class OperatorStatus(BaseModel):
     active:bool
+class OperatorRole(BaseModel):
+    role:str=Field(pattern='^(operator|admin)
 class Create(BaseModel):
     customer_email:EmailStr
     event_name:str=Field(min_length=3,max_length=250)
@@ -394,7 +409,7 @@ def build_report_recipients(request_row,configured:str):
     """Deduplicate internal recipients. Never copy the organizer/customer mailbox."""
     with db() as c:
         admins=[record['email'] for record in c.execute(text("""SELECT email
-          FROM app_users WHERE role='admin' AND active=TRUE AND email IS NOT NULL
+          FROM app_users WHERE role IN ('admin','superadmin') AND active=TRUE AND email IS NOT NULL
           AND password_setup_required=FALSE""")).mappings()]
         creator=fetchone(c,'SELECT email FROM app_users WHERE id=:id AND active=TRUE',
                          {'id':request_row['owner_user_id']}) if request_row.get('owner_user_id') else None
@@ -569,14 +584,1057 @@ def login(body:Login,response:Response,request:Request):
     return {'ok':True,'csrf':sign('csrf:'+session_value),'email':fresh['email'],
             'legacy_login':fresh['username'] if not fresh['email'] else None,
             'user_id':fresh['id'],'display_name':fresh['display_name'],
-            'is_admin':fresh['role']=='admin',
+            'is_admin':fresh['role'] in ('admin','superadmin'),'role':fresh['role'],
             'can_delete_accounts':can_delete_accounts(fresh)}
 @app.get('/api/session')
 def session(request:Request):
     user=require_user(request)
     return {'ok':True,'csrf':user['csrf'],'email':user['email'],
             'legacy_login':user['username'] if not user['email'] else None,
-            'user_id':user['id'],'display_name':user['display_name'],'is_admin':user['role']=='admin',
+            'user_id':user['id'],'display_name':user['display_name'],'is_admin':user['role'] in ('admin','superadmin'),'role':user['role'],
+            'can_delete_accounts':can_delete_accounts(user)}
+@app.post('/api/logout')
+def logout(request:Request,response:Response):
+    require_user(request)
+    response.delete_cookie('cri_admin',secure=SECURE,samesite='strict')
+    return {'ok':True}
+
+# First-login activation and admin password reset use the same one-time email flow.
+def setup_link_for_user(user_id:int)->tuple[str,str,str]:
+    if not os.getenv('SMTP_HOST','').strip() or not os.getenv('SMTP_FROM','').strip():
+        raise HTTPException(503,'SMTP non configurato: impossibile inviare il link di attivazione')
+    token=secrets.token_urlsafe(36)
+    expires=(now()+timedelta(hours=48)).isoformat(timespec='seconds')
+    with db() as c:
+        user=fetchone(c,'SELECT id,email,display_name,active FROM app_users WHERE id=:id',{'id':user_id})
+        if not user:raise HTTPException(404,'Utente non trovato')
+        if not user['active']:raise HTTPException(409,'Attiva prima questo operatore')
+        if not user['email']:raise HTTPException(422,'Assegna prima un indirizzo email')
+        if not may_send_to_email(user['email']):
+            raise HTTPException(409,'Email verso Amministrazione CRI sospese fino alla produzione')
+        c.execute(text("""UPDATE app_users SET setup_token_hash=:hash,
+            setup_expires_at=:expires,password_setup_required=TRUE,
+            password_hash=:disabled,auth_version=:version WHERE id=:id"""),
+            {'hash':digest(token),'expires':expires,'disabled':'!','version':secrets.token_hex(16),'id':user_id})
+        audit(c,None,'password_setup_issued_'+str(user_id))
+    return user['email'],user['display_name'],f'{PUBLIC_BASE_URL}/activate/{token}'
+
+def send_password_setup(email:str,name:str,link:str,forgot:bool=False)->str:
+    if not may_send_to_email(email):return 'suppressed_until_production'
+    host=os.getenv('SMTP_HOST','').strip()
+    sender=os.getenv('SMTP_FROM','').strip()
+    smtp_user=os.getenv('SMTP_USER','').strip()
+    password=os.getenv('SMTP_PASSWORD','')
+    msg=EmailMessage()
+    msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
+    msg['To']=email
+    msg['Subject']=('CRI Venezia - Recupero password' if forgot
+                     else 'CRI Venezia - Configurazione password account operatore')
+    msg.set_content('Gentile '+name+',\n\n'
+        +('per recuperare l’accesso imposta una nuova password personale ' if forgot
+          else 'per attivare il tuo account CRI Venezia imposta una password personale ')
+        +'utilizzando questo collegamento:\n\n'+link+'\n\n'
+        'Il link scade dopo 48 ore ed è utilizzabile una sola volta. '
+        'Se non hai richiesto questo messaggio, contatta l’amministratore CRI Venezia.\n\n'
+        'Non inoltrare questo link ad altre persone.')
+    try:
+        port=int(os.getenv('SMTP_PORT','587'))
+        if os.getenv('SMTP_SSL','false').lower()=='true':
+            with smtplib.SMTP_SSL(host,port,timeout=20,context=ssl.create_default_context()) as smtp:
+                if smtp_user:smtp.login(smtp_user,password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host,port,timeout=20) as smtp:
+                smtp.starttls(context=ssl.create_default_context())
+                if smtp_user:smtp.login(smtp_user,password)
+                smtp.send_message(msg)
+        return 'sent'
+    except (Exception) as exc:
+        logger.warning('Account activation delivery failed, type=%s',type(exc).__name__)
+        return 'failed'
+
+def get_setup_record(token:str):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{35,128}',token):
+        raise HTTPException(410,'Link non valido o scaduto')
+    with db() as c:
+        row=fetchone(c,"""SELECT id,email,display_name FROM app_users
+          WHERE setup_token_hash=:digest AND setup_expires_at>:current
+            AND password_setup_required=TRUE AND active=TRUE""",
+          {'digest':digest(token),'current':iso()})
+    if not row:raise HTTPException(410,'Link già utilizzato, scaduto o revocato')
+    return row
+
+def get_password_reset_record(token:str):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{35,128}',token):
+        raise HTTPException(410,'Link non valido o scaduto')
+    with db() as c:
+        row=fetchone(c,"""SELECT id,email,display_name FROM app_users
+          WHERE reset_token_hash=:digest AND reset_expires_at>:current
+          AND active=TRUE AND password_setup_required=FALSE""",
+          {'digest':digest(token),'current':iso()})
+    if not row:raise HTTPException(410,'Link già utilizzato, scaduto o revocato')
+    return row
+
+@app.post('/api/password/forgot')
+def forgot_password(body:ForgotPassword,request:Request):
+    """Always return the same result for known and unknown addresses."""
+    address=str(body.email).strip().lower()
+    ip=request.client.host if request.client else 'unknown'
+    key_ip=digest(ip)
+    moment=time.monotonic()
+    response={'ok':True,'message':'Se l’indirizzo è registrato e può ricevere email, riceverai un link per reimpostare la password.'}
+    with _RESET_LOCK:
+        if len(_RESET_REQUESTS)>1200:_RESET_REQUESTS.clear()
+        attempts=[t for t in _RESET_REQUESTS.get(key_ip,[]) if moment-t<900]
+        if len(attempts)>=5:
+            return response
+        _RESET_REQUESTS[key_ip]=attempts+[moment]
+    if not may_send_to_email(address) or not os.getenv('SMTP_HOST','').strip() or not os.getenv('SMTP_FROM','').strip():
+        return response
+    token=secrets.token_urlsafe(36)
+    token_hash=digest(token)
+    with db() as c:
+        user=fetchone(c,"""UPDATE app_users SET
+            reset_token_hash=:hash,reset_expires_at=:expires,reset_requested_at=:sent
+          WHERE LOWER(email)=:email AND active=TRUE AND password_setup_required=FALSE
+            AND (reset_requested_at IS NULL OR reset_requested_at<:threshold)
+          RETURNING email,display_name,id""",
+          {'hash':token_hash,
+           'expires':(now()+timedelta(hours=48)).isoformat(timespec='seconds'),
+           'sent':iso(),
+           'threshold':(now()-timedelta(minutes=10)).isoformat(timespec='seconds'),
+           'email':address})
+        if user:audit(c,None,'password_recovery_requested_'+str(user['id']))
+    if user:
+        link=f'{PUBLIC_BASE_URL}/reset/{token}'
+        outcome=send_password_setup(user['email'],user['display_name'],link,forgot=True)
+        if outcome!='sent':
+            with db() as c:
+                c.execute(text("""UPDATE app_users SET reset_token_hash=NULL,
+                  reset_expires_at=NULL,reset_requested_at=NULL
+                  WHERE id=:id AND reset_token_hash=:hash"""),
+                  {'id':user['id'],'hash':token_hash})
+                audit(c,None,'password_recovery_email_failed_'+str(user['id']))
+    return response
+
+@app.get('/reset/{token}')
+def password_reset_page(token:str):
+    get_password_reset_record(token)
+    return FileResponse(BASE/'static'/'activate.html',
+         headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
+
+@app.post('/api/password/reset/{token}')
+def complete_password_reset(token:str,body:SetPassword):
+    user=get_password_reset_record(token)
+    with db() as c:
+        result=c.execute(text("""UPDATE app_users SET
+            password_hash=:password,failed_login_attempts=0,auto_locked_at=NULL,
+            reset_token_hash=NULL,reset_expires_at=NULL,reset_requested_at=NULL,
+            auth_version=:version
+          WHERE id=:id AND reset_token_hash=:hash AND reset_expires_at>:current
+            AND active=TRUE AND password_setup_required=FALSE"""),
+          {'password':password_hash(body.password),'version':secrets.token_hex(16),
+           'id':user['id'],'hash':digest(token),'current':iso()})
+        if result.rowcount!=1:raise HTTPException(410,'Link scaduto o già utilizzato')
+        audit(c,None,'password_recovery_completed_'+str(user['id']))
+    return {'ok':True}
+
+@app.get('/activate/{token}')
+def activation_page(token:str):
+    try:
+        get_setup_record(token)
+    except HTTPException:
+        return HTMLResponse('<!doctype html><html lang="it"><meta charset="utf-8">'
+           '<title>Link non valido</title><main><h1>Link scaduto o revocato</h1>'
+           '<p>Contatta l’amministratore CRI Venezia per riceverne uno nuovo.</p></main></html>',
+            status_code=410,headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
+    return FileResponse(BASE/'static'/'activate.html',
+         headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
+
+@app.post('/api/activate/{token}')
+def activate_user(token:str,body:SetPassword):
+    user=get_setup_record(token)
+    with db() as c:
+        result=c.execute(text("""UPDATE app_users SET password_hash=:password,
+            password_setup_required=FALSE,setup_token_hash=NULL,setup_expires_at=NULL,
+            failed_login_attempts=0,auto_locked_at=NULL,
+            auth_version=:version WHERE id=:id AND setup_token_hash=:hash
+            AND setup_expires_at>:current AND password_setup_required=TRUE AND active=TRUE"""),
+           {'password':password_hash(body.password),'version':secrets.token_hex(16),
+            'id':user['id'],'hash':digest(token),'current':iso()})
+        if result.rowcount!=1:raise HTTPException(410,'Link non più valido')
+        audit(c,None,'password_setup_completed_'+str(user['id']))
+    return {'ok':True}
+
+@app.get('/api/users')
+def get_users(request:Request):
+    require_account_deletion_owner(request)
+    with db() as c:
+        rows=c.execute(text("""SELECT id,email,username,display_name,role,active,created_at,
+            password_setup_required,setup_expires_at,failed_login_attempts,auto_locked_at
+            FROM app_users ORDER BY id""")).mappings().all()
+    return [dict(row) for row in rows]
+@app.post('/api/users')
+def create_user(body:NewOperator,request:Request):
+    require_account_deletion_owner(request)
+    if not os.getenv('SMTP_HOST','').strip() or not os.getenv('SMTP_FROM','').strip():
+        raise HTTPException(503,'Configura SMTP prima di creare gli account')
+    email=str(body.email).strip().lower()
+    with db() as c:
+        if fetchone(c,'SELECT id FROM app_users WHERE LOWER(email)=:email',{'email':email}):
+            raise HTTPException(409,'Email già assegnata a un account')
+        username='account-'+secrets.token_hex(12)
+        assigned_role='admin' if email==ADDITIONAL_ADMIN_EMAIL else 'operator'
+        uid=c.execute(text("""INSERT INTO app_users
+            (username,email,display_name,password_hash,role,active,
+            auth_version,created_at,password_setup_required)
+            VALUES(:username,:email,:display_name,:pw,:role,TRUE,:version,:at,TRUE)
+            RETURNING id"""),
+            {'username':username,'email':email,'display_name':body.display_name.strip(),
+             'role':assigned_role,
+             'pw':'!','version':secrets.token_hex(16),'at':iso()}).scalar_one()
+        audit(c,None,'user_created_'+str(uid))
+    to,name,link=setup_link_for_user(uid)
+    outcome=send_password_setup(to,name,link)
+    return {'ok':True,'id':uid,'email':email,'activation_status':outcome}
+
+@app.put('/api/users/{id}/role')
+def set_user_role(id:int,body:OperatorRole,request:Request):
+    owner=require_account_deletion_owner(request)
+    if id==owner['id']:
+        raise HTTPException(409,'Il ruolo Super Admin principale non può essere modificato')
+    with db() as c:
+        member=fetchone(c,'SELECT id,email,username,role FROM app_users WHERE id=:id',
+                        {'id':id})
+        if not member:raise HTTPException(404,'Account non trovato')
+        if member['username']=='admin' or member['role']=='superadmin':
+            raise HTTPException(409,'Non è possibile cambiare un Super Admin')
+        if (member.get('email') or '').strip().casefold()==ADDITIONAL_ADMIN_EMAIL and body.role!='admin':
+            raise HTTPException(409,'L’account amministrativo CRI deve mantenere il ruolo Admin')
+        if member['role']!=body.role:
+            c.execute(text('UPDATE app_users SET role=:role,auth_version=:version WHERE id=:id'),
+              {'role':body.role,'version':secrets.token_hex(16),'id':id})
+            audit(c,None,'user_role_'+body.role+'_'+str(id)+'_by_'+str(owner['id']))
+    return {'ok':True,'role':body.role,'sessions_revoked':True}
+
+@app.put('/api/users/{id}/email')
+def set_user_email(id:int,body:UpdateOperatorEmail,request:Request):
+    owner=require_account_deletion_owner(request)
+    email=str(body.email).strip().lower()
+    if id==owner['id'] and email!=OWNER_DELETE_EMAIL:
+        raise HTTPException(409,'L’email dell’amministratore principale è protetta: richiede una modifica tecnica controllata')
+    with db() as c:
+        user=fetchone(c,'SELECT id,email FROM app_users WHERE id=:id',{'id':id})
+        if not user:raise HTTPException(404,'Utente non trovato')
+        existing=fetchone(c,'SELECT id FROM app_users WHERE LOWER(email)=:email',{'email':email})
+        if existing and existing['id']!=id:raise HTTPException(409,'Email già assegnata a un account')
+        # Assignment of the designated CRI mailbox is an admin-only action.
+        # This address must receive admin privileges, while every other user's
+        # existing role stays unchanged.
+        designated_role='admin' if email==ADDITIONAL_ADMIN_EMAIL else None
+        c.execute(text("""UPDATE app_users SET email=:email,auth_version=:version,
+           role=COALESCE(:role,role),
+           setup_token_hash=NULL,setup_expires_at=NULL WHERE id=:id"""),
+            {'email':email,'role':designated_role,
+             'version':secrets.token_hex(16),'id':id})
+        audit(c,None,'user_email_updated_'+str(id))
+    return {'ok':True,'sessions_revoked':True}
+
+@app.post('/api/users/{id}/send-setup')
+def resend_password_setup(id:int,request:Request):
+    require_account_deletion_owner(request)
+    to,name,link=setup_link_for_user(id)
+    outcome=send_password_setup(to,name,link)
+    return {'ok':True,'activation_status':outcome,'sessions_revoked':True}
+
+@app.put('/api/users/{id}/status')
+def set_user_status(id:int,body:OperatorStatus,request:Request):
+    admin=require_account_deletion_owner(request)
+    if admin['id']==id:raise HTTPException(409,'Non puoi disattivare il tuo account amministratore')
+    with db() as c:
+        user=fetchone(c,'SELECT id FROM app_users WHERE id=:id',{'id':id})
+        if not user:raise HTTPException(404,'Utente non trovato')
+        c.execute(text("""UPDATE app_users SET active=:active,auth_version=:version,
+             failed_login_attempts=0,auto_locked_at=NULL WHERE id=:id"""),
+             {'active':body.active,'version':secrets.token_hex(16),'id':id})
+        audit(c,None,('user_enabled_' if body.active else 'user_disabled_')+str(id))
+    return {'ok':True}
+
+@app.delete('/api/users/{id}')
+def delete_user(id:int,body:DeleteUserRequest,request:Request):
+    owner=require_account_deletion_owner(request)
+    if owner['id']==id:raise HTTPException(409,'Non puoi eliminare il tuo account principale')
+    if body.confirmation!='ELIMINA':
+        raise HTTPException(422,'Digitare ELIMINA per confermare')
+    with db() as c:
+        administrator=fetchone(c,"""SELECT id,password_hash FROM app_users
+            WHERE id=:id AND active=TRUE""",{'id':owner['id']})
+        if not administrator or not verify_password(body.password,administrator['password_hash']):
+            raise HTTPException(403,'Password amministratore non corretta')
+        victim=fetchone(c,'SELECT id,email,username FROM app_users WHERE id=:id',{'id':id})
+        if not victim:raise HTTPException(404,'Account non trovato')
+        if victim['username']=='admin':
+            raise HTTPException(409,'L’account amministratore principale non può essere eliminato')
+        expected=(victim['email'] or victim['username'] or '').strip().casefold()
+        if body.confirm_email.strip().casefold()!=expected:
+            raise HTTPException(422,'Conferma email/account non corrispondente')
+        # Preserve every clinical/document record and its original owner_user_id
+        # as an immutable historical attribution. No user IDs are reused by the DB.
+        # Pending invitation links are revoked so an orphaned request cannot be
+        # finalized by a recipient after its operator's account was deleted.
+        pending=c.execute(text("""SELECT id FROM requests WHERE owner_user_id=:id
+          AND status IN ('pending','draft') AND archived_at IS NULL"""),{'id':id}).scalars().all()
+        for request_id in pending:
+            c.execute(text('UPDATE requests SET archived_at=:at WHERE id=:id'),
+                      {'at':iso(),'id':request_id})
+            audit(c,request_id,'invitation_revoked_user_deleted_'+str(id))
+        # The special CRI admin mailbox is auto-provisioned on startup, so record
+        # an explicit owner's deletion decision to prevent accidental recreation.
+        if (victim['email'] or '').strip().casefold()==ADDITIONAL_ADMIN_EMAIL:
+            set_setting(c,'designated_admin_deleted','true')
+        removed=c.execute(text('DELETE FROM app_users WHERE id=:id'),{'id':id})
+        if removed.rowcount!=1:raise HTTPException(409,'Account già eliminato')
+        audit(c,None,'account_deleted_by_'+str(owner['id'])+'_user_'+str(id))
+    return {'ok':True,'deleted_user_id':id,
+            'revoked_pending_invitations':len(pending),
+            'historical_requests_preserved':True}
+
+@app.post('/api/users/{id}/unlock')
+def unlock_user(id:int,request:Request):
+    admin=require_account_deletion_owner(request)
+    with db() as c:
+        user=fetchone(c,'SELECT id,active,auto_locked_at FROM app_users WHERE id=:id',{'id':id})
+        if not user:raise HTTPException(404,'Utente non trovato')
+        if not user['active']:
+            raise HTTPException(409,'Utente bloccato manualmente: usa Sblocca accesso')
+        c.execute(text("""UPDATE app_users SET failed_login_attempts=0,
+            auto_locked_at=NULL,auth_version=:version WHERE id=:id"""),
+            {'version':secrets.token_hex(16),'id':id})
+        audit(c,None,'login_unlocked_by_'+str(admin['id'])+'_user_'+str(id))
+    return {'ok':True}
+
+def send_invitation(request_id:int, recipient:str, url:str, days:int, event_name:str='', event_city:str='')->str:
+    """Send one-time invitation link; never log the bearer token."""
+    if not may_send_to_email(recipient):return 'suppressed_until_production'
+    host=os.getenv('SMTP_HOST','').strip()
+    sender=os.getenv('SMTP_FROM','').strip()
+    user=os.getenv('SMTP_USER','').strip()
+    password=os.getenv('SMTP_PASSWORD','')
+    if not host or not sender:
+        return 'smtp_not_configured'
+    msg=EmailMessage()
+    msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
+    msg['To']=recipient
+    msg['Subject']='CRI Venezia - Compilazione richiesta di assistenza sanitaria'
+    msg.set_content(
+        'Gentile organizzatore,\n\n'
+        +f'Evento: {event_name} – {event_city}.\n\n'
+        +'ricevi questa email in merito alla tua richiesta di supporto sanitario '
+        'effettuata presso il Comitato della Croce Rossa Italiana di Venezia.\n\n'
+        'Ti preghiamo di compilare il modulo online attraverso il collegamento '
+        'personale riportato di seguito. Le informazioni raccolte ci permetteranno '
+        'di predisporre il Piano Sanitario di valutazione relativo al tuo evento.\n\n'
+        +url+'\n\n'
+        +f'Il collegamento sarà valido per {days} giorni dalla creazione della richiesta. '
+        'Ti invitiamo a non condividerlo con persone non autorizzate.\n\n'
+        'La compilazione del modulo non costituisce conferma o approvazione del '
+        'servizio richiesto; il Piano Sanitario sarà sottoposto alle verifiche della CRI.\n\n'
+        'Cordiali saluti,\n'
+        'Croce Rossa Italiana - Comitato di Venezia\n'
+        'Messaggio automatico: non rispondere a questa email per trasmettere dati sensibili.'
+    )
+    try:
+        port=int(os.getenv('SMTP_PORT','587'))
+        if os.getenv('SMTP_SSL','false').lower()=='true':
+            with smtplib.SMTP_SSL(host,port,timeout=20,context=ssl.create_default_context()) as smtp:
+                if user:smtp.login(user,password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host,port,timeout=20) as smtp:
+                smtp.starttls(context=ssl.create_default_context())
+                if user:smtp.login(user,password)
+                smtp.send_message(msg)
+    except Exception as exc:
+        logger.warning('Invitation send failed request=%d type=%s',request_id,type(exc).__name__)
+        with db() as c:audit(c,request_id,'invitation_failed')
+        return 'failed'
+    with db() as c:audit(c,request_id,'invitation_sent')
+    return 'sent'
+
+@app.post('/api/requests')
+def create(request:Request,body:Create):
+    user=require_user(request)
+    token=secrets.token_urlsafe(36)
+    with db() as c:
+        params={'h':digest(token),'email':str(body.customer_email),'created':iso(),'expires':(now()+timedelta(days=body.days)).isoformat(timespec='seconds')}
+        params['owner']=user['id']
+        params['event_name']=body.event_name.strip()
+        params['event_city']=body.event_city.strip()
+        id=c.execute(text("INSERT INTO requests(token_hash,customer_email,created_at,expires_at,status,payload,notes,owner_user_id,planned_event_name,planned_event_city) VALUES(:h,:email,:created,:expires,'pending','{}','',:owner,:event_name,:event_city) RETURNING id"),params).scalar_one()
+        audit(c,id,'created')
+    link=f'{PUBLIC_BASE_URL}/r/{token}'
+    invitation_status=send_invitation(id,str(body.customer_email),link,body.days,body.event_name,body.event_city)
+    return {'id':id,'url':link,'expires_in_days':body.days,'invitation_status':invitation_status,'event_name':body.event_name,'event_city':body.event_city}
+@app.get('/r/{token}')
+def external(token:str,request:Request):
+    try:
+        get_token_record(token)
+    except HTTPException as exc:
+        if exc.status_code in (404, 410):
+            return HTMLResponse("""<!doctype html><html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Collegamento non disponibile | CRI Venezia</title>
+<link rel="icon" type="image/svg+xml" href="/static/logo-cri-venezia.svg"><link rel="stylesheet" href="/static/style.css"></head><body>
+<header><img class="cri-logo" src="/static/logo-cri-venezia.svg" alt="Croce Rossa Italiana – Comitato di Venezia"><div><div class="brand">Croce Rossa Italiana – Comitato di Venezia</div></div></header>
+<main><section class="panel" role="alert">
+<h1>Il link è scaduto oppure è stato revocato da CRI Venezia</h1>
+<p>Contatta <strong>CRI VENEZIA</strong> al numero
+<a href="tel:+39041982333"><strong>041 982333</strong></a>.</p>
+</section></main></body></html>""",status_code=410)
+        raise
+    if request.url.query:
+        # A broken old form may have submitted PII using GET. Never process GET
+        # as submission; redirect to a clean URL and explain the failure.
+        return RedirectResponse(url='/r/'+token+'#invio-non-registrato',
+            status_code=303,headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
+    return FileResponse(BASE/'static'/'form.html',headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
+# Previous completed requests may be reused only when both organizer email
+# and CRI creator account match. Never expose other operators' requests.
+# The form explicitly lets the recipient select organization and event details.
+# Never reuse invitation email, old event dates, old consent or internal protocol.
+REUSABLE_EVENT_FIELDS=(
+ 'org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi',
+ 'org_phone','org_pec',
+ 'event_name','event_city','event_place','event_description',
+ 'reference_name','reference_phone','event_type','recurrence','location_type',
+ 'road_closure','participants_athletes','participants_public','children','elderly',
+ 'disabled','risk_options','additional_notes')
+def previous_event_years(data:dict,submitted_at:str|None)->tuple[list[int],str]:
+    """Use years in event dates. Legacy records without dates fall back to submission year."""
+    years=set()
+    slots=data.get('event_slots')
+    if isinstance(slots,list):
+        for slot in slots:
+            if not isinstance(slot,dict):continue
+            date=slot.get('date')
+            if isinstance(date,str) and re.fullmatch(r'(?:19|20)[0-9]{2}-[0-9]{2}-[0-9]{2}',date):
+                years.add(int(date[:4]))
+    if not years:
+        dates=data.get('event_dates')
+        if isinstance(dates,str):
+            years.update(int(year) for year in re.findall(
+                r'\b((?:19|20)[0-9]{2})-[0-9]{2}-[0-9]{2}\b',dates))
+            years.update(int(year) for year in re.findall(
+                r'\b[0-3]?[0-9]/[01]?[0-9]/((?:19|20)[0-9]{2})\b',dates))
+    if years:return sorted(years,reverse=True),'event'
+    year_match=re.match(r'^((?:19|20)[0-9]{2})',submitted_at or '')
+    return ([int(year_match.group(1))] if year_match else []),'submission'
+
+@app.get('/api/r/{token}/previous-events')
+def previous_events(token:str,response:Response):
+    response.headers['Cache-Control']='no-store'
+    response.headers['Referrer-Policy']='no-referrer'
+    current=get_token_record(token)
+    with db() as c:
+        previous=c.execute(text("""SELECT id,payload,submitted_at FROM requests
+            WHERE LOWER(TRIM(customer_email))=:email AND id<>:id
+            AND status IN ('submitted','approved')
+            AND (owner_user_id=:owner OR (:owner IS NULL AND owner_user_id IS NULL))
+            ORDER BY id DESC LIMIT 200"""),
+            {'email':current['customer_email'].strip().lower(),
+             'id':current['id'],'owner':current.get('owner_user_id')}).mappings().all()
+    results=[]
+    for item in previous:
+        try:data=json.loads(item['payload'])
+        except (TypeError,ValueError):continue
+        if not isinstance(data,dict) or not data.get('event_name'):continue
+        years,year_basis=previous_event_years(data,item['submitted_at'])
+        results.append({'id':item['id'],'name':data['event_name'],
+                        'submitted_at':item['submitted_at'],
+                        'years':years,'year_basis':year_basis,
+                        'data':{k:data[k] for k in REUSABLE_EVENT_FIELDS if k in data}})
+    return results
+
+# The user's token is validated locally and never sent to the geocoding provider.
+_ADDRESS_RATE_LOCK=threading.Lock()
+_ADDRESS_LOOKUPS={}
+_ADDRESS_CACHE={}
+@app.get('/api/r/{token}/address-suggestions')
+def address_suggestions(token:str, q:str=Query(min_length=3,max_length=110)):
+    get_token_record(token)
+    query=' '.join(q.strip().split())
+    if len(query)<3:return {'suggestions':[]}
+    current=time.monotonic()
+    key=digest(token)
+    query_key=digest(query.casefold())
+    with _ADDRESS_RATE_LOCK:
+        # In-memory cache reduces repeat requests to the best-effort public
+        # demo service. Do not persist raw address searches or bearer tokens.
+        if len(_ADDRESS_CACHE)>400:
+            _ADDRESS_CACHE.clear()
+        cached=_ADDRESS_CACHE.get(query_key)
+        if cached and current-cached[0]<180:
+            return {'suggestions':cached[1],'available':True}
+        if len(_ADDRESS_LOOKUPS)>800:_ADDRESS_LOOKUPS.clear()
+        times=[v for v in _ADDRESS_LOOKUPS.get(key,[]) if current-v<60]
+        if len(times)>=30:
+            raise HTTPException(429,'Troppe ricerche indirizzo: attendi un minuto')
+        times.append(current)
+        _ADDRESS_LOOKUPS[key]=times
+    # Photon demo instances do not always have Italian enabled. Supplying
+    # lang=it can cause HTTP 400 although normal address searches work.
+    # Omit the optional language parameter and let Photon return local names.
+    url='https://photon.komoot.io/api/?'+urlencode(
+        {'q':query,'limit':8})
+    req=UpstreamRequest(url,headers={'Accept':'application/json',
+        'User-Agent':'CRI-Venezia-Address-Form/1.0'})
+    try:
+        with urlopen(req,timeout=8) as remote:
+            if remote.status!=200:
+                logger.warning('Geocoding upstream HTTP status=%s',remote.status)
+                return {'suggestions':[],'available':False,'reason':'provider_http'}
+            response=json.loads(remote.read(150000))
+    except HTTPError as exc:
+        logger.warning('Geocoding upstream HTTP status=%s',exc.code)
+        return {'suggestions':[],'available':False,
+                'reason':'rate_limited' if exc.code==429 else 'provider_http'}
+    except (URLError,OSError,TimeoutError) as exc:
+        logger.warning('Geocoding upstream connection failure type=%s',type(exc).__name__)
+        reason='timeout' if 'timed out' in str(exc).lower() or isinstance(exc,TimeoutError) else 'connection'
+        return {'suggestions':[],'available':False,'reason':reason}
+    except (ValueError,UnicodeDecodeError,TypeError) as exc:
+        logger.warning('Geocoding upstream malformed response type=%s',type(exc).__name__)
+        return {'suggestions':[],'available':False,'reason':'invalid_response'}
+    addresses=[]
+    seen=set()
+    for feature in (response.get('features') or [])[:12]:
+        if not isinstance(feature,dict):continue
+        p=feature.get('properties') or {}
+        if (p.get('countrycode') or '').lower() not in ('it',''):
+            continue
+        street=p.get('street') or ''
+        name=p.get('name') or ''
+        number=str(p.get('housenumber') or '')
+        main=' '.join(filter(None,[street,number])) if street else name
+        locality=p.get('city') or p.get('locality') or p.get('county') or ''
+        cap=str(p.get('postcode') or '')
+        region=p.get('state') or ''
+        chunks=[main,' '.join(filter(None,[cap,locality])),region]
+        address=', '.join(str(x) for x in chunks if x)
+        if name and street and name.casefold()!=street.casefold():
+            address=name+' — '+address
+        address=address[:350]
+        if not address or address.casefold() in seen:continue
+        seen.add(address.casefold())
+        addresses.append(address)
+        if len(addresses)>=6:break
+    with _ADDRESS_RATE_LOCK:
+        _ADDRESS_CACHE[query_key]=(current,addresses)
+    return {'suggestions':addresses,'available':True}
+
+@app.get('/api/r/{token}')
+def token_info(token:str):
+    r=get_token_record(token)
+    return {'status':r['status'],'customer_email':r['customer_email'],'event_name':r.get('planned_event_name') or '','event_city':r.get('planned_event_city') or '','data':json.loads(r['payload']) if r['status']=='draft' else {}}
+def allocate_annual_protocol(c, year:int)->str:
+    """Allocate once within the submission transaction, with database-level
+    concurrency safety and a non-destructive seed from old protocol numbers."""
+    prefix=f'CRI-VE/{year}/'
+    historic=c.execute(text('''SELECT protocol_number FROM requests
+        WHERE protocol_number LIKE :prefix'''),{'prefix':prefix+'%'}).scalars()
+    last_existing=max((int(match.group(1)) for value in historic
+        if (match:=re.fullmatch(re.escape(prefix)+r'([0-9]+)',value or ''))),
+        default=0)
+    number=c.execute(text('''INSERT INTO protocol_counters(year,last_number)
+        VALUES(:year,:first)
+        ON CONFLICT(year) DO UPDATE SET
+          last_number=protocol_counters.last_number+1
+        RETURNING last_number'''),
+        {'year':year,'first':last_existing+1}).scalar_one()
+    return f'{prefix}{number:06d}'
+
+@app.put('/api/r/{token}')
+def save(token:str,body:Submission,draft:bool=False):
+    r=get_token_record(token)
+    if not draft and (not body.privacy_ack or not body.declaration):
+        raise HTTPException(422,'Confermare informativa e dichiarazione')
+    submitted=now_venice() if not draft else None
+    # Internal reference only, not CRI's official document registry.
+    # Allocate the annual sequence atomically inside the save transaction.
+    with db() as c:
+        protocol=allocate_annual_protocol(c,datetime.fromisoformat(submitted).year) if submitted else None
+        result=c.execute(text("""UPDATE requests SET payload=:p,status=:s,
+                submitted_at=:submitted,protocol_number=:protocol,protocol_at=:protocol_date
+             WHERE id=:id AND token_hash=:token_hash
+             AND archived_at IS NULL AND expires_at>:current
+             AND status IN ('pending','draft')"""),
+             {'p':body.model_dump_json(),'s':'draft' if draft else 'submitted',
+              'submitted':submitted,'protocol':protocol,'protocol_date':submitted,
+              'id':r['id'],'token_hash':digest(token),'current':iso()})
+        if result.rowcount!=1:raise HTTPException(409,'Richiesta non più attiva')
+        audit(c,r['id'],'saved_draft' if draft else 'submitted')
+    mail='not_sent'
+    if not draft:
+        try:
+            mail=mail_request(r['id'],body.model_dump())
+        except Exception as exc:
+            logger.error('Post-submission notification failed request=%d type=%s',r['id'],type(exc).__name__)
+            with db() as c:
+                c.execute(text('UPDATE requests SET mail_error=:err WHERE id=:id'),
+                          {'err':type(exc).__name__,'id':r['id']})
+                audit(c,r['id'],'mail_failed')
+            mail='failed'
+    return {'ok':True,'status':'draft' if draft else 'submitted','mail_status':mail,
+            'protocol_number':protocol,'protocol_at':submitted}
+
+@app.get('/api/requests')
+def list_requests(request:Request,view:str='all'):
+    user=require_user(request)
+    clauses={
+        'all':'r.archived_at IS NULL',
+        'compiled':"r.archived_at IS NULL AND r.status IN ('submitted','approved')",
+        'pending':"r.archived_at IS NULL AND r.status IN ('pending','draft')",
+        'archived':'r.archived_at IS NOT NULL'
+    }
+    if view not in clauses:raise HTTPException(422,'Filtro non valido')
+    query="""SELECT r.id,r.customer_email,r.created_at,r.expires_at,r.submitted_at,
+        r.protocol_number,r.protocol_at,r.planned_event_name,r.planned_event_city,
+        r.approved_at,r.status,r.payload,r.mailed_at,r.mail_error,r.archived_at,
+        r.owner_user_id,u.email AS creator_email,u.display_name AS creator_name
+        FROM requests r LEFT JOIN app_users u ON u.id=r.owner_user_id
+        WHERE """+clauses[view]+"""
+        AND (:admin = TRUE OR r.owner_user_id=:uid) ORDER BY r.id DESC LIMIT 300"""
+    with db() as c:
+        rows=c.execute(text(query),{'admin':user['role'] in ('admin','superadmin'),'uid':user['id']}).mappings().all()
+    result=[]
+    for row in rows:
+        payload=json.loads(row['payload'])
+        result.append({k:row[k] for k in ('id','customer_email','created_at','expires_at',
+            'submitted_at','protocol_number','protocol_at','planned_event_name','planned_event_city',
+            'approved_at','status','mailed_at','mail_error','archived_at','owner_user_id',
+            'creator_email','creator_name')}|
+            {'event_name':payload.get('event_name') or row['planned_event_name'] or '',
+             'event_city':payload.get('event_city') or row['planned_event_city'] or '',
+             'org_name':payload.get('org_name','')})
+    return result
+
+@app.post('/api/requests/{id}/archive')
+def set_archived(id:int, request:Request, archived:bool=True):
+    require_request_access(request,id)
+    with db() as c:
+        r=fetchone(c,'SELECT id,archived_at FROM requests WHERE id=:id',{'id':id})
+        if not r:raise HTTPException(404,'Richiesta inesistente')
+        c.execute(text('UPDATE requests SET archived_at=:archived, token_hash=CASE WHEN :archive_flag THEN :revoked_hash ELSE token_hash END WHERE id=:id'),{'archived':iso() if archived else None,'archive_flag':archived,'revoked_hash':digest('revoked:'+secrets.token_urlsafe(48)),'id':id})
+        audit(c,id,'archived' if archived else 'restored')
+    return {'ok':True,'archived':archived}
+
+@app.get('/api/requests/{id}')
+def detail(id:int,request:Request):
+    require_request_access(request,id)
+    with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
+    if not r:raise HTTPException(404,'Richiesta inesistente')
+    return {k:r[k] for k in ('id','customer_email','created_at','submitted_at','approved_at','status','notes','mailed_at','mail_error','archived_at','expires_at','owner_user_id','protocol_number','protocol_at','planned_event_name','planned_event_city')}|{'data':json.loads(r['payload'])}
+@app.post('/api/requests/{id}/approve')
+def approve(id:int,body:Approval,request:Request):
+    require_admin(request)
+    with db() as c:
+        r=fetchone(c,'SELECT status FROM requests WHERE id=:id',{'id':id})
+        if not r:raise HTTPException(404,'Richiesta inesistente')
+        if r['status'] not in ('submitted','approved'):raise HTTPException(409,'La richiesta deve essere inviata')
+        c.execute(text("UPDATE requests SET status='approved',approved_at=:at,notes=:notes WHERE id=:id"),{'at':iso(),'notes':body.notes,'id':id});audit(c,id,'approved')
+    return {'ok':True}
+@app.get('/api/requests/{id}/excel')
+def excel(id:int,request:Request):
+    require_request_access(request,id)
+    with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
+    if not r:raise HTTPException(404,'Richiesta inesistente')
+    if r['status'] not in ('submitted','approved'):raise HTTPException(409,'Invio non ancora completato')
+    content=render_excel(BASE/'templates'/'piano_sanitario_2026.xlsx',json.loads(r['payload']))
+    return StreamingResponse(io.BytesIO(content),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{plan_filename(r)}"'})
+@app.get('/api/requests/{id}/data')
+def export_data(id:int,request:Request):
+    require_request_access(request,id)
+    with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
+    if not r:raise HTTPException(404,'Richiesta inesistente')
+    d={k:r[k] for k in ('id','created_at','submitted_at','protocol_number','protocol_at','approved_at','status','notes')}|{'data':json.loads(r['payload'])}
+    return Response(json.dumps(d,ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':f'attachment; filename="richiesta_{id}.json"'})
+@app.get('/api/settings/mail')
+def get_mail_settings(request:Request):
+    require_admin(request)
+    with db() as c:return {'enabled':get_setting(c,'mail_enabled','false')=='true','recipients':get_setting(c,'mail_recipients'),'subject':get_setting(c,'mail_subject','Piano Sanitario CRI - protocollo {protocol} - {event}'),'body':get_setting(c,'mail_body','È stata ricevuta la richiesta #{id} per {event}. Il piano allegato è una BOZZA da verificare e approvare dalla CRI.'),'smtp_ready':bool(os.getenv('SMTP_HOST') and os.getenv('SMTP_FROM')),'administration_mail_paused':not administration_mail_active()}
+@app.put('/api/settings/mail')
+def update_mail_settings(body:MailSettings,request:Request):
+    require_admin(request)
+    addresses=[x.strip() for x in re.split(r'[,;\n]',body.recipients) if x.strip()]
+    if len(addresses)>20 or any(not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',x) for x in addresses):raise HTTPException(422,'Destinatari non validi (massimo 20)')
+    if body.enabled and not addresses:raise HTTPException(422,'Indicare almeno un destinatario')
+    with db() as c:
+        for k,v in [('mail_enabled','true' if body.enabled else 'false'),('mail_recipients',', '.join(addresses)),('mail_subject',body.subject),('mail_body',body.body)]:set_setting(c,k,v)
+        audit(c,None,'mail_settings_updated')
+    return {'ok':True}
+class TestMail(BaseModel):
+    to:EmailStr
+
+_MAIL_TEST_LOCK=threading.Lock()
+_MAIL_TEST_ATTEMPTS={}
+@app.post('/api/settings/mail/test')
+def test_mail(body:TestMail,request:Request):
+    admin=require_admin(request)
+    target=str(body.to).strip().lower()
+    if not may_send_to_email(target):
+        raise HTTPException(409,'Invio a Amministrazione CRI sospeso in TEST: riattivare solo in produzione')
+    with db() as c:
+        configured=get_setting(c,'mail_recipients','')
+        addresses={x.strip().lower() for x in re.split(r'[,;\n]',configured) if x.strip()}
+        if admin.get('email'):addresses.add(admin['email'].strip().lower())
+        for entry in c.execute(text("""SELECT email FROM app_users WHERE role IN ('admin','superadmin')
+             AND active=TRUE AND email IS NOT NULL""")).mappings():
+            addresses.add(entry['email'].strip().lower())
+    if target not in addresses:
+        raise HTTPException(403,'Per la prova usa un destinatario già configurato o un’email amministrativa')
+    moment=time.monotonic()
+    with _MAIL_TEST_LOCK:
+        recent=[t for t in _MAIL_TEST_ATTEMPTS.get(admin['id'],[]) if moment-t<900]
+        if len(recent)>=5:raise HTTPException(429,'Massimo cinque email di test ogni 15 minuti')
+        _MAIL_TEST_ATTEMPTS[admin['id']]=recent+[moment]
+    host=os.getenv('SMTP_HOST','').strip()
+    sender=os.getenv('SMTP_FROM','').strip()
+    if not host or not sender:raise HTTPException(503,'SMTP non configurato in Coolify')
+    msg=EmailMessage()
+    msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
+    msg['To']=target
+    msg['Subject']='CRI Venezia - test configurazione email'
+    msg.set_content('Questo è un messaggio di prova del sistema Richieste Sanitarie CRI Venezia.\n'
+        'Il server SMTP ha accettato la spedizione se la prova è confermata. '
+        'Controlla anche Spam e posta indesiderata.\n'
+        'Nessun dato sanitario o documento è allegato a questa prova.')
+    try:
+        port=int(os.getenv('SMTP_PORT','587'))
+        smtp_user=os.getenv('SMTP_USER','').strip()
+        password=os.getenv('SMTP_PASSWORD','')
+        if os.getenv('SMTP_SSL','false').lower()=='true':
+            with smtplib.SMTP_SSL(host,port,timeout=20,context=ssl.create_default_context()) as smtp:
+                if smtp_user:smtp.login(smtp_user,password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host,port,timeout=20) as smtp:
+                smtp.starttls(context=ssl.create_default_context())
+                if smtp_user:smtp.login(smtp_user,password)
+                smtp.send_message(msg)
+    except Exception as exc:
+        logger.warning('SMTP test failed type=%s',type(exc).__name__)
+        raise HTTPException(502,'Invio di prova non riuscito: verifica SMTP e i log Coolify')
+    with db() as c:
+        audit(c,None,'smtp_test_sent_'+str(admin['id']))
+    return {'status':'accepted_by_smtp','recipient':target}
+
+@app.post('/api/requests/{id}/send-email')
+def resend(id:int,request:Request):
+    require_request_access(request,id)
+    with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
+    if not r:raise HTTPException(404,'Richiesta inesistente')
+    outcome=mail_request(id,json.loads(r['payload']),force=True)
+    return {'status':outcome}
+)
+class Create(BaseModel):
+    customer_email:EmailStr
+    event_name:str=Field(min_length=3,max_length=250)
+    event_city:str=Field(min_length=2,max_length=160)
+    days:int=Field(default=14,ge=1,le=60)
+def check_vat(number):
+    number=number.strip().upper().removeprefix('IT')
+    if not number:return True
+    if not re.fullmatch(r'[0-9]{11}',number):return False
+    total=0
+    for i,c in enumerate(number[:10]):
+        n=int(c)
+        if i%2:n=n*2-9 if n*2>9 else n*2
+        total+=n
+    return (10-total%10)%10==int(number[-1])
+
+def check_fiscal(code):
+    code=code.strip().upper()
+    if not code:return True
+    if re.fullmatch(r'[0-9]{11}',code):return check_vat(code)
+    if not re.fullmatch(r'[A-Z0-9]{16}',code):return False
+    odds='BAKPLCQDREVOSFTGUHMINJWZYX'
+    even='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    digit_odd=[1,0,5,7,9,13,15,17,19,21]
+    total=0
+    for i,c in enumerate(code[:15]):
+        if i%2:total+=int(c) if c.isdigit() else even.index(c)
+        else:total+=digit_odd[int(c)] if c.isdigit() else odds.index(c)
+    return even[total%26]==code[-1]
+
+class EventSlot(BaseModel):
+    date:str
+    start:str
+    end:str
+    @model_validator(mode='after')
+    def check(self):
+        from datetime import date as _date, time as _time
+        try:
+            _date.fromisoformat(self.date)
+            start=_time.fromisoformat(self.start)
+            end=_time.fromisoformat(self.end)
+        except ValueError:raise ValueError('Data o orario non valido')
+        if end<=start:raise ValueError('Orario di fine successivo a quello di inizio richiesto')
+        return self
+
+class Submission(BaseModel):
+    event_slots:list[EventSlot]=Field(default_factory=list,max_length=60)
+    org_name:str=Field(min_length=2,max_length=220)
+    org_contact:str=Field(min_length=2,max_length=220)
+    org_address:str=Field(min_length=5,max_length=400)
+    org_tax_code:str=Field(default='',max_length=32)
+    org_vat:str=Field(default='',max_length=32)
+    org_sdi:str=Field(default='',max_length=12)
+    org_phone:str=Field(min_length=5,max_length=40)
+    org_email:EmailStr
+    org_pec:str=Field(default='',max_length=254)
+    event_name:str=Field(min_length=3,max_length=250)
+    event_city:str=Field(default='',max_length=160)
+    event_dates:str=Field(min_length=8,max_length=4000)
+    event_time:str=Field(min_length=3,max_length=5000)
+    event_place:str=Field(min_length=5,max_length=400)
+    event_description:str=Field(min_length=10,max_length=2000)
+    reference_name:str=Field(min_length=2,max_length=180)
+    reference_phone:str=Field(min_length=5,max_length=40)
+    participants_athletes:int=Field(default=0,ge=0,le=5000000)
+    participants_public:int=Field(default=0,ge=0,le=5000000)
+    children:int=Field(default=0,ge=0,le=5000000)
+    elderly:int=Field(default=0,ge=0,le=5000000)
+    disabled:int=Field(default=0,ge=0,le=5000000)
+    road_closure:bool=False
+    location_type:str=Field(default='',max_length=100)
+    event_type:str=Field(default='',max_length=120)
+    recurrence:str=Field(default='',max_length=120)
+    risk_options:list[str]=Field(default_factory=list,max_length=24)
+    additional_notes:str=Field(default='',max_length=1500)
+    privacy_ack:bool=False
+    declaration:bool=False
+    @model_validator(mode='after')
+    def validate_business_data(self):
+        if self.org_tax_code and not check_fiscal(self.org_tax_code):
+            raise ValueError('Codice fiscale non valido')
+        if self.org_vat and not check_vat(self.org_vat):
+            raise ValueError('Partita IVA non valida')
+        if self.event_slots:
+            self.event_dates=', '.join(slot.date for slot in self.event_slots)
+            self.event_time='; '.join(f'{slot.date} {slot.start}-{slot.end}' for slot in self.event_slots)
+        return self
+
+class Approval(BaseModel):notes:str=Field(default='',max_length=1500)
+class MailSettings(BaseModel):
+    enabled:bool=False
+    recipients:str=Field(default='',max_length=2000)
+    subject:str=Field(default='Nuova richiesta sanitaria CRI #{id} - {event}',max_length=300)
+    body:str=Field(default='È stata ricevuta la richiesta #{id} per {event}. Il piano allegato è una BOZZA da verificare e approvare dalla CRI.',max_length=4000)
+
+def plan_filename(request_row, draft=True):
+    # The actual protocol registration date, rather than the download date,
+    # keeps attachments recognisable even when reissued later.
+    date=str(request_row.get('protocol_at') or request_row.get('submitted_at') or request_row.get('created_at') or '')
+    compact=re.sub(r'[^0-9]','',date[:10])[:8] or 'data_sconosciuta'
+    protocol=request_row.get('protocol_number')
+    safe=re.sub(r'[^A-Za-z0-9_-]','-',str(protocol))[:70] if protocol else f'senza_protocollo_{request_row["id"]}'
+    return f'piano_sanitario_{"bozza_" if draft else ""}{compact}_{safe}.xlsx'
+
+def mail_blocked(id:int,reason:str)->str:
+    """Store a human-readable configuration state without discarding the submitted request."""
+    with db() as c:
+        c.execute(text('UPDATE requests SET mail_error=:reason WHERE id=:id'),{
+            'reason':reason,'id':id})
+        audit(c,id,'mail_blocked_'+reason)
+    return reason
+
+def build_report_recipients(request_row,configured:str):
+    """Deduplicate internal recipients. Never copy the organizer/customer mailbox."""
+    with db() as c:
+        admins=[record['email'] for record in c.execute(text("""SELECT email
+          FROM app_users WHERE role IN ('admin','superadmin') AND active=TRUE AND email IS NOT NULL
+          AND password_setup_required=FALSE""")).mappings()]
+        creator=fetchone(c,'SELECT email FROM app_users WHERE id=:id AND active=TRUE',
+                         {'id':request_row['owner_user_id']}) if request_row.get('owner_user_id') else None
+    configured=[x.strip() for x in re.split(r'[,;\n]',configured) if x.strip()]
+    # Always notify the official CRI Venezia administrative mailbox for a
+    # completed organizer request, even while its web-login activation is pending.
+    # The mailbox recipient is explicitly designated by the committee; receiving
+    # a notification is independent of having an active application session.
+    candidates=[ADDITIONAL_ADMIN_EMAIL]+configured+admins+(
+        [creator['email']] if creator and creator.get('email') else [])
+    seen=set()
+    recipients=[]
+    for value in candidates:
+        value=value.strip()
+        if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',value):continue
+        normalized=value.casefold()
+        if normalized in seen or not may_send_to_email(value):continue
+        seen.add(normalized)
+        recipients.append(value)
+    return recipients
+
+def mail_request(id,request_data,force=False):
+    with db() as c:
+        r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
+        if not r or r['status'] not in ('submitted','approved'):return 'not_submitted'
+        if r['mailed_at'] and not force:return 'already_sent'
+        enabled=get_setting(c,'mail_enabled','false')=='true'
+        configured=get_setting(c,'mail_recipients','')
+        subject=get_setting(c,'mail_subject','Piano Sanitario CRI - protocollo {protocol} - {event}')
+        body=get_setting(c,'mail_body','Nuova richiesta sanitaria per {event}. Documento da verificare e approvare.')
+    if not enabled:return mail_blocked(id,'disabled')
+    recipients=build_report_recipients(r,configured)
+    if not recipients:return mail_blocked(id,'no_recipients')
+    host=os.getenv('SMTP_HOST','').strip()
+    port=int(os.getenv('SMTP_PORT','587'))
+    sender=os.getenv('SMTP_FROM','').strip()
+    smtp_user=os.getenv('SMTP_USER','').strip()
+    password=os.getenv('SMTP_PASSWORD','')
+    if not host or not sender:return mail_blocked(id,'smtp_not_configured')
+    protocol=r.get('protocol_number') or 'Non assegnato (richiesta storica)'
+    submitted_at=r.get('protocol_at') or r.get('submitted_at') or ''
+    admin_link=f'{PUBLIC_BASE_URL}/?request={id}'
+    label={'id':id,'event':request_data.get('event_name',''),
+           'organizer':request_data.get('org_name',''),'protocol':protocol,
+           'protocol_date':submitted_at,'request_link':admin_link}
+    def fmt(template):
+        for key,value in label.items():template=template.replace('{'+key+'}',str(value))
+        return template
+    message_subject=re.sub(r'[\r\n]+',' ',fmt(subject))
+    if protocol not in message_subject:message_subject+=' - '+protocol
+    msg=EmailMessage()
+    msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
+    msg['To']=', '.join(recipients)
+    msg['Subject']=message_subject
+    text_body=(fmt(body)+'\n\nProtocollo interno: '+protocol+
+      '\nData registrazione: '+submitted_at+
+      '\nApri richiesta nell’area riservata CRI: '+admin_link+
+      '\n\nAllegato: Piano Sanitario Excel precompilato (BOZZA NON APPROVATA).'+
+      '\nIl collegamento richiede l’accesso con un account CRI autorizzato.')
+    msg.set_content(text_body)
+    msg.add_alternative(
+      '<!doctype html><html lang="it"><body style="font-family:Arial,sans-serif;color:#17212d">'
+      '<h2 style="color:#a71930">CRI Venezia – nuova richiesta sanitaria compilata</h2>'
+      '<p>'+html.escape(fmt(body)).replace('\n','<br>')+'</p>'
+      '<p><strong>Evento:</strong> '+html.escape(str(label['event']))+'</p>'
+      '<p><strong>Protocollo interno:</strong> '+html.escape(str(protocol))+'</p>'
+      '<p><strong>Data registrazione:</strong> '+html.escape(str(submitted_at))+'</p>'
+      '<p><a href="'+html.escape(admin_link,quote=True)+'" '
+      'style="display:inline-block;padding:12px 18px;background:#b5162e;color:#fff;'
+      'text-decoration:none;border-radius:6px">Apri richiesta nell’area CRI</a></p>'
+      '<p>Il link richiede l’accesso con un account autorizzato.</p>'
+      '<p><strong>Allegato:</strong> Piano Sanitario Excel – bozza da verificare.</p>'
+      '</body></html>',subtype='html')
+    try:
+        document=render_excel(BASE/'templates'/'piano_sanitario_2026.xlsx',request_data)
+        msg.add_attachment(document,maintype='application',
+          subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          filename=plan_filename(r))
+    except Exception as exc:
+        logger.error('Excel attachment generation failed request=%d type=%s',id,type(exc).__name__)
+        return mail_blocked(id,'excel_generation_failed')
+    try:
+        if os.getenv('SMTP_SSL','false').lower()=='true':
+            with smtplib.SMTP_SSL(host,port,timeout=20,context=ssl.create_default_context()) as smtp:
+                if smtp_user:smtp.login(smtp_user,password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host,port,timeout=20) as smtp:
+                smtp.starttls(context=ssl.create_default_context())
+                if smtp_user:smtp.login(smtp_user,password)
+                smtp.send_message(msg)
+    except Exception as exc:
+        logger.warning('Email delivery failed request=%d type=%s',id,type(exc).__name__)
+        return mail_blocked(id,'smtp_send_failed')
+    with db() as c:
+        c.execute(text('UPDATE requests SET mailed_at=:at,mail_error=NULL WHERE id=:id'),
+                  {'at':iso(),'id':id})
+        audit(c,id,'mail_sent')
+    return 'sent'
+
+@app.get('/')
+def home():
+    return FileResponse(BASE/'static'/'index.html',
+        headers={'Cache-Control':'no-store','Referrer-Policy':'same-origin'})
+
+@app.get('/health')
+def health():
+    try:
+        with db() as conn:
+            conn.execute(text('SELECT 1')).scalar_one()
+    except Exception:
+        raise HTTPException(503,'Database non disponibile')
+    return {'status':'ok'}
+
+@app.post('/api/login')
+def login(body:Login,response:Response,request:Request):
+    ip=request.client.host if request.client else 'unknown'
+    current=time.monotonic()
+    with _LOGIN_LOCK:
+        for old_ip in list(_LOGIN_ATTEMPTS):
+            _LOGIN_ATTEMPTS[old_ip]=[t for t in _LOGIN_ATTEMPTS[old_ip] if current-t<900]
+            if not _LOGIN_ATTEMPTS[old_ip]:del _LOGIN_ATTEMPTS[old_ip]
+        if len(_LOGIN_ATTEMPTS.get(ip,[]))>=5:
+            raise HTTPException(429,'Troppi tentativi: riprovare tra 15 minuti')
+    identity=body.email.strip().lower()
+    with db() as c:
+        user=fetchone(c,"""SELECT * FROM app_users
+            WHERE LOWER(email)=:identity OR (email IS NULL AND username=:identity)""",
+            {'identity':identity})
+    # A manual or automatic account lock also invalidates existing sessions.
+    if user and not user['active']:
+        raise HTTPException(423,'Account bloccato dall’amministratore. Contatta il responsabile CRI.')
+    if user and user['auto_locked_at']:
+        raise HTTPException(423,'Account bloccato dopo 3 password errate. Usa «Password dimenticata?» o contatta un amministratore.')
+    bad_password=(not user or user['password_setup_required']
+                  or not verify_password(body.password,user['password_hash']))
+    if bad_password:
+        with _LOGIN_LOCK:_LOGIN_ATTEMPTS.setdefault(ip,[]).append(current)
+        if user and user['active'] and not user['password_setup_required']:
+            # Atomic database increment works across web workers and restarts.
+            # Three consecutive wrong passwords lock the account until recovery.
+            with db() as c:
+                result=fetchone(c,"""UPDATE app_users SET
+                    failed_login_attempts=failed_login_attempts+1,
+                    auto_locked_at=CASE WHEN failed_login_attempts+1>=3
+                        THEN :at ELSE auto_locked_at END,
+                    auth_version=CASE WHEN failed_login_attempts+1>=3
+                        THEN :version ELSE auth_version END
+                  WHERE id=:id AND active=TRUE AND auto_locked_at IS NULL
+                  RETURNING failed_login_attempts,auto_locked_at""",
+                  {'at':iso(),'version':secrets.token_hex(16),'id':user['id']})
+                if result and result['auto_locked_at']:
+                    audit(c,None,'login_auto_locked_'+str(user['id']))
+            if result and result['auto_locked_at']:
+                raise HTTPException(423,'Account bloccato dopo 3 password errate. Usa «Password dimenticata?» o contatta un amministratore.')
+        raise HTTPException(401,'Credenziali non valide')
+    with db() as c:
+        # In case a parallel request locked the account while checking PBKDF2,
+        # only an active, unlocked account may receive a fresh session.
+        fresh=fetchone(c,"""UPDATE app_users SET failed_login_attempts=0
+          WHERE id=:id AND active=TRUE AND auto_locked_at IS NULL
+            AND password_setup_required=FALSE AND auth_version=:version
+          RETURNING id,email,username,display_name,role,auth_version""",
+          {'id':user['id'],'version':user['auth_version']})
+    if not fresh:
+        raise HTTPException(423,'Accesso non consentito: account bloccato o sessione revocata.')
+    with _LOGIN_LOCK:_LOGIN_ATTEMPTS.pop(ip,None)
+    expiry=str(int((now()+timedelta(hours=8)).timestamp()))
+    session_value=str(fresh['id'])+':'+fresh['auth_version']+':'+expiry
+    response.set_cookie('cri_admin',session_value+'.'+sign(session_value),
+        httponly=True,secure=SECURE,samesite='strict',max_age=28800)
+    return {'ok':True,'csrf':sign('csrf:'+session_value),'email':fresh['email'],
+            'legacy_login':fresh['username'] if not fresh['email'] else None,
+            'user_id':fresh['id'],'display_name':fresh['display_name'],
+            'is_admin':fresh['role'] in ('admin','superadmin'),'role':fresh['role'],
+            'can_delete_accounts':can_delete_accounts(fresh)}
+@app.get('/api/session')
+def session(request:Request):
+    user=require_user(request)
+    return {'ok':True,'csrf':user['csrf'],'email':user['email'],
+            'legacy_login':user['username'] if not user['email'] else None,
+            'user_id':user['id'],'display_name':user['display_name'],'is_admin':user['role'] in ('admin','superadmin'),'role':user['role'],
             'can_delete_accounts':can_delete_accounts(user)}
 @app.post('/api/logout')
 def logout(request:Request,response:Response):
@@ -1171,7 +2229,7 @@ def list_requests(request:Request,view:str='all'):
         WHERE """+clauses[view]+"""
         AND (:admin = TRUE OR r.owner_user_id=:uid) ORDER BY r.id DESC LIMIT 300"""
     with db() as c:
-        rows=c.execute(text(query),{'admin':user['role']=='admin','uid':user['id']}).mappings().all()
+        rows=c.execute(text(query),{'admin':user['role'] in ('admin','superadmin'),'uid':user['id']}).mappings().all()
     result=[]
     for row in rows:
         payload=json.loads(row['payload'])
@@ -1253,7 +2311,7 @@ def test_mail(body:TestMail,request:Request):
         configured=get_setting(c,'mail_recipients','')
         addresses={x.strip().lower() for x in re.split(r'[,;\n]',configured) if x.strip()}
         if admin.get('email'):addresses.add(admin['email'].strip().lower())
-        for entry in c.execute(text("""SELECT email FROM app_users WHERE role='admin'
+        for entry in c.execute(text("""SELECT email FROM app_users WHERE role IN ('admin','superadmin')
              AND active=TRUE AND email IS NOT NULL""")).mappings():
             addresses.add(entry['email'].strip().lower())
     if target not in addresses:
