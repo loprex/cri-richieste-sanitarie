@@ -950,6 +950,60 @@ def update_mail_settings(body:MailSettings,request:Request):
         for k,v in [('mail_enabled','true' if body.enabled else 'false'),('mail_recipients',', '.join(addresses)),('mail_subject',body.subject),('mail_body',body.body)]:set_setting(c,k,v)
         audit(c,None,'mail_settings_updated')
     return {'ok':True}
+class TestMail(BaseModel):
+    to:EmailStr
+
+_MAIL_TEST_LOCK=threading.Lock()
+_MAIL_TEST_ATTEMPTS={}
+@app.post('/api/settings/mail/test')
+def test_mail(body:TestMail,request:Request):
+    admin=require_admin(request)
+    target=str(body.to).strip().lower()
+    with db() as c:
+        configured=get_setting(c,'mail_recipients','')
+        addresses={x.strip().lower() for x in re.split(r'[,;\n]',configured) if x.strip()}
+        if admin.get('email'):addresses.add(admin['email'].strip().lower())
+        for entry in c.execute(text("""SELECT email FROM app_users WHERE role='admin'
+             AND active=TRUE AND email IS NOT NULL""")).mappings():
+            addresses.add(entry['email'].strip().lower())
+    if target not in addresses:
+        raise HTTPException(403,'Per la prova usa un destinatario già configurato o un’email amministrativa')
+    moment=time.monotonic()
+    with _MAIL_TEST_LOCK:
+        recent=[t for t in _MAIL_TEST_ATTEMPTS.get(admin['id'],[]) if moment-t<900]
+        if len(recent)>=5:raise HTTPException(429,'Massimo cinque email di test ogni 15 minuti')
+        _MAIL_TEST_ATTEMPTS[admin['id']]=recent+[moment]
+    host=os.getenv('SMTP_HOST','').strip()
+    sender=os.getenv('SMTP_FROM','').strip()
+    if not host or not sender:raise HTTPException(503,'SMTP non configurato in Coolify')
+    msg=EmailMessage()
+    msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
+    msg['To']=target
+    msg['Subject']='CRI Venezia - test configurazione email'
+    msg.set_content('Questo è un messaggio di prova del sistema Richieste Sanitarie CRI Venezia.\n'
+        'Il server SMTP ha accettato la spedizione se la prova è confermata. '
+        'Controlla anche Spam e posta indesiderata.\n'
+        'Nessun dato sanitario o documento è allegato a questa prova.')
+    try:
+        port=int(os.getenv('SMTP_PORT','587'))
+        smtp_user=os.getenv('SMTP_USER','').strip()
+        password=os.getenv('SMTP_PASSWORD','')
+        if os.getenv('SMTP_SSL','false').lower()=='true':
+            with smtplib.SMTP_SSL(host,port,timeout=20,context=ssl.create_default_context()) as smtp:
+                if smtp_user:smtp.login(smtp_user,password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host,port,timeout=20) as smtp:
+                smtp.starttls(context=ssl.create_default_context())
+                if smtp_user:smtp.login(smtp_user,password)
+                smtp.send_message(msg)
+    except Exception as exc:
+        logger.warning('SMTP test failed type=%s',type(exc).__name__)
+        raise HTTPException(502,'Invio di prova non riuscito: verifica SMTP e i log Coolify')
+    with db() as c:
+        audit(c,None,'smtp_test_sent_'+str(admin['id']))
+    return {'status':'accepted_by_smtp','recipient':target}
+
 @app.post('/api/requests/{id}/send-email')
 def resend(id:int,request:Request):
     require_request_access(request,id)
