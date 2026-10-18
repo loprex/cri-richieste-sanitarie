@@ -25,3 +25,8 @@
 @media(max-width:660px){.event-reuse-modes,.reuse-fields{grid-template-columns:1fr}.event-reuse-details{padding:12px}}
 
 .address-status{min-height:18px;font-size:12px;color:#526173;margin-top:5px;line-height:1.45}
+
+/* Group previous-request reuse into organization and event information */
+.reuse-field-group{border-top:1px solid #e7dfe1;margin-top:14px;padding-top:12px}
+.reuse-field-group:first-child{border-top:0;padding-top:0}
+.reuse-field-group h4{font-size:15px;margin:0 0 8px;color:#951426}
