@@ -26,6 +26,15 @@ SESSION_SECRET=os.getenv('SESSION_SECRET','')
 PUBLIC_BASE_URL=os.getenv('PUBLIC_BASE_URL','http://localhost:8000').rstrip('/')
 SECURE=os.getenv('COOKIE_SECURE','true').lower()=='true'
 ADDITIONAL_ADMIN_EMAIL='amministrazione@crivenezia.it'
+# Fail closed: TEST and staging must not contact the official administration mailbox.
+# Both explicit production environment and opt-in are necessary to reactivate.
+def administration_mail_active()->bool:
+    return (os.getenv('CRI_DEPLOYMENT_ENV','test').strip().lower()=='production'
+            and os.getenv('CRI_ENABLE_ADMINISTRATION_EMAIL','false').strip().lower()=='true')
+def may_send_to_email(address:str)->bool:
+    return (address.strip().casefold()!=ADDITIONAL_ADMIN_EMAIL
+            or administration_mail_active())
+
 if len(PASSWORD)<24 or len(SESSION_SECRET)<32:raise RuntimeError('Set ADMIN_PASSWORD (min 24) and SESSION_SECRET (min 32)')
 app=FastAPI(title='CRI Richieste Assistenza Sanitaria',docs_url=None,redoc_url=None,openapi_url=None)
 app.mount('/static',StaticFiles(directory=BASE/'static'),name='static')
@@ -370,7 +379,7 @@ def build_report_recipients(request_row,configured:str):
         value=value.strip()
         if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',value):continue
         normalized=value.casefold()
-        if normalized in seen:continue
+        if normalized in seen or not may_send_to_email(value):continue
         seen.add(normalized)
         recipients.append(value)
     return recipients
@@ -516,6 +525,8 @@ def setup_link_for_user(user_id:int)->tuple[str,str,str]:
         if not user:raise HTTPException(404,'Utente non trovato')
         if not user['active']:raise HTTPException(409,'Attiva prima questo operatore')
         if not user['email']:raise HTTPException(422,'Assegna prima un indirizzo email')
+        if not may_send_to_email(user['email']):
+            raise HTTPException(409,'Email verso Amministrazione CRI sospese fino alla produzione')
         c.execute(text("""UPDATE app_users SET setup_token_hash=:hash,
             setup_expires_at=:expires,password_setup_required=TRUE,
             password_hash=:disabled,auth_version=:version WHERE id=:id"""),
@@ -524,6 +535,7 @@ def setup_link_for_user(user_id:int)->tuple[str,str,str]:
     return user['email'],user['display_name'],f'{PUBLIC_BASE_URL}/activate/{token}'
 
 def send_password_setup(email:str,name:str,link:str)->str:
+    if not may_send_to_email(email):return 'suppressed_until_production'
     host=os.getenv('SMTP_HOST','').strip()
     sender=os.getenv('SMTP_FROM','').strip()
     smtp_user=os.getenv('SMTP_USER','').strip()
@@ -664,6 +676,7 @@ def set_user_status(id:int,body:OperatorStatus,request:Request):
 
 def send_invitation(request_id:int, recipient:str, url:str, days:int, event_name:str='', event_city:str='')->str:
     """Send one-time invitation link; never log the bearer token."""
+    if not may_send_to_email(recipient):return 'suppressed_until_production'
     host=os.getenv('SMTP_HOST','').strip()
     sender=os.getenv('SMTP_FROM','').strip()
     user=os.getenv('SMTP_USER','').strip()
@@ -966,6 +979,8 @@ _MAIL_TEST_ATTEMPTS={}
 def test_mail(body:TestMail,request:Request):
     admin=require_admin(request)
     target=str(body.to).strip().lower()
+    if not may_send_to_email(target):
+        raise HTTPException(409,'Invio a Amministrazione CRI sospeso in TEST: riattivare solo in produzione')
     with db() as c:
         configured=get_setting(c,'mail_recipients','')
         addresses={x.strip().lower() for x in re.split(r'[,;\n]',configured) if x.strip()}
