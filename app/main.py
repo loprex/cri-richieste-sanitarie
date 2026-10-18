@@ -171,16 +171,18 @@ with db() as c:
     elif not secondary:
         # Create a pending, passwordless administrator account only for the
         # explicitly designated mailbox. Admin sends a one-use activation link.
-        c.execute(text("""INSERT INTO app_users
+        created=c.execute(text("""INSERT INTO app_users
           (username,email,display_name,password_hash,role,active,
            auth_version,created_at,password_setup_required)
-          VALUES(:username,:email,:display_name,'!','admin',TRUE,:version,:at,TRUE)"""),
+          VALUES(:username,:email,:display_name,'!','admin',TRUE,:version,:at,TRUE)
+          ON CONFLICT(email) DO NOTHING RETURNING id"""),
           {'username':'account-'+secrets.token_hex(12),'email':ADDITIONAL_ADMIN_EMAIL,
            'display_name':'Amministrazione CRI Venezia',
-           'version':secrets.token_hex(16),'at':iso()})
-        c.execute(text("""INSERT INTO audit(request_id,action,created_at)
-          VALUES(NULL,:action,:at)"""),
-          {'action':'designated_admin_account_created_pending_activation','at':iso()})
+           'version':secrets.token_hex(16),'at':iso()}).scalar_one_or_none()
+        if created:
+            c.execute(text("""INSERT INTO audit(request_id,action,created_at)
+              VALUES(NULL,:action,:at)"""),
+              {'action':'designated_admin_account_created_pending_activation','at':iso()})
 
 def audit(c,id,action):c.execute(text('INSERT INTO audit(request_id,action,created_at) VALUES(:id,:action,:at)'),{'id':id,'action':action,'at':iso()})
 def sign(v):return hmac.new(SESSION_SECRET.encode(),v.encode(),hashlib.sha256).hexdigest()
