@@ -2,6 +2,11 @@ const form=document.getElementById('activationForm');
 const notice=document.getElementById('activateNotice');
 const button=document.getElementById('activateSubmit');
 const token=location.pathname.split('/').pop();
+const recovering=location.pathname.startsWith('/reset/');
+if(recovering){
+ document.querySelector('.sub').textContent='Recupero password operatore';
+ document.querySelector('main h1').textContent='Imposta una nuova password';
+}
 function feedback(message,bad=false){
   notice.textContent=message;
   notice.className='notice '+(bad?'err':'good');
@@ -17,7 +22,7 @@ form.addEventListener('submit',async event=>{
   }
   button.disabled=true;button.textContent='Attivazione in corso…';
   try{
-    const response=await fetch('/api/activate/'+encodeURIComponent(token),{
+    const response=await fetch((recovering?'/api/password/reset/':'/api/activate/')+encodeURIComponent(token),{
       method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({password})
     });
@@ -26,7 +31,7 @@ form.addEventListener('submit',async event=>{
       throw Error(typeof obj.detail==='string'?obj.detail:'Link scaduto o non valido');
     }
     form.classList.add('hidden');
-    feedback('Password configurata correttamente. Ora puoi accedere con la tua email e la nuova password.');
+    feedback('Password aggiornata correttamente. Ora puoi accedere con la tua email e la nuova password.');
     history.replaceState(null,'','/');
   }catch(error){feedback(error.message,true)}
   finally{button.disabled=false;button.textContent='Imposta password'}
