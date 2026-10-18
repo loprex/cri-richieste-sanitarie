@@ -145,7 +145,7 @@ def mail_request(id,request_data,force=False):
     def fmt(s):
         for k,v in label.items():s=s.replace('{'+k+'}',str(v))
         return s
-    msg=EmailMessage();msg['From']=sender;msg['To']=', '.join(recipients);msg['Subject']=fmt(subject)
+    msg=EmailMessage();msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender));msg['To']=', '.join(recipients);msg['Subject']=fmt(subject)
     msg.set_content(fmt(body)+'\n\nDocumento allegato: precompilato, NON APPROVATO dalla CRI.')
     document=render_excel(BASE/'templates'/'piano_sanitario_2026.xlsx',request_data)
     msg.add_attachment(document,maintype='application',subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',filename=f'piano_sanitario_bo zza_{id}.xlsx'.replace(' ',''))
