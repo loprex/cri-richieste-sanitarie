@@ -599,7 +599,7 @@ def send_password_setup(email:str,name:str,link:str,forgot:bool=False)->str:
           else 'per attivare il tuo account CRI Venezia imposta una password personale ')
         +'utilizzando questo collegamento:\n\n'+link+'\n\n'
         'Il link scade dopo 48 ore ed è utilizzabile una sola volta. '
-        'Se non hai richiesto un account contatta l’amministratore CRI Venezia.\n\n'
+        'Se non hai richiesto questo messaggio, contatta l’amministratore CRI Venezia.\n\n'
         'Non inoltrare questo link ad altre persone.')
     try:
         port=int(os.getenv('SMTP_PORT','587'))
@@ -675,7 +675,8 @@ def forgot_password(body:ForgotPassword,request:Request):
         if outcome!='sent':
             with db() as c:
                 c.execute(text("""UPDATE app_users SET reset_token_hash=NULL,
-                  reset_expires_at=NULL WHERE id=:id AND reset_token_hash=:hash"""),
+                  reset_expires_at=NULL,reset_requested_at=NULL
+                  WHERE id=:id AND reset_token_hash=:hash"""),
                   {'id':user['id'],'hash':token_hash})
                 audit(c,None,'password_recovery_email_failed_'+str(user['id']))
     return response
