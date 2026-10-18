@@ -774,6 +774,25 @@ REUSABLE_EVENT_FIELDS=(
  'reference_name','reference_phone','event_type','recurrence','location_type',
  'road_closure','participants_athletes','participants_public','children','elderly',
  'disabled','risk_options','additional_notes')
+def previous_event_years(data:dict,submitted_at:str|None)->tuple[list[int],str]:
+    """Use years in event dates. Legacy records without dates fall back to submission year."""
+    years=set()
+    slots=data.get('event_slots')
+    if isinstance(slots,list):
+        for slot in slots:
+            if not isinstance(slot,dict):continue
+            date=slot.get('date')
+            if isinstance(date,str) and re.fullmatch(r'(?:19|20)[0-9]{2}-[0-9]{2}-[0-9]{2}',date):
+                years.add(int(date[:4]))
+    if not years:
+        dates=data.get('event_dates')
+        if isinstance(dates,str):
+            years.update(int(year) for year in re.findall(
+                r'\\b((?:19|20)[0-9]{2})-[0-9]{2}-[0-9]{2}\\b',dates))
+    if years:return sorted(years,reverse=True),'event'
+    year_match=re.match(r'^((?:19|20)[0-9]{2})',submitted_at or '')
+    return ([int(year_match.group(1))] if year_match else []),'submission'
+
 @app.get('/api/r/{token}/previous-events')
 def previous_events(token:str,response:Response):
     response.headers['Cache-Control']='no-store'
@@ -784,7 +803,7 @@ def previous_events(token:str,response:Response):
             WHERE LOWER(TRIM(customer_email))=:email AND id<>:id
             AND status IN ('submitted','approved')
             AND (owner_user_id=:owner OR (:owner IS NULL AND owner_user_id IS NULL))
-            ORDER BY id DESC LIMIT 30"""),
+            ORDER BY id DESC LIMIT 200"""),
             {'email':current['customer_email'].strip().lower(),
              'id':current['id'],'owner':current.get('owner_user_id')}).mappings().all()
     results=[]
@@ -792,8 +811,10 @@ def previous_events(token:str,response:Response):
         try:data=json.loads(item['payload'])
         except (TypeError,ValueError):continue
         if not isinstance(data,dict) or not data.get('event_name'):continue
+        years,year_basis=previous_event_years(data,item['submitted_at'])
         results.append({'id':item['id'],'name':data['event_name'],
                         'submitted_at':item['submitted_at'],
+                        'years':years,'year_basis':year_basis,
                         'data':{k:data[k] for k in REUSABLE_EVENT_FIELDS if k in data}})
     return results
 
