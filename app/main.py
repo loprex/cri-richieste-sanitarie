@@ -3,6 +3,7 @@ from email.message import EmailMessage
 from email.utils import formataddr
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, RedirectResponse
@@ -31,6 +32,7 @@ _LOGIN_LOCK=threading.Lock()
 
 def now():return datetime.now(timezone.utc)
 def iso():return now().isoformat(timespec='seconds')
+def now_venice():return datetime.now(ZoneInfo('Europe/Rome')).isoformat(timespec='seconds')
 def digest(s):return hashlib.sha256(s.encode()).hexdigest()
 def key(k):return 'setting_'+k
 @contextmanager
@@ -96,6 +98,29 @@ with db() as c:
 if 'owner_user_id' not in {col['name'] for col in inspect(engine).get_columns('requests')}:
     with db() as c:
         c.execute(text('ALTER TABLE requests ADD COLUMN owner_user_id INTEGER'))
+# Add optional email identities, event labels and internal submission protocol.
+# Legacy users without an email may sign in by username until their email is set.
+for table,additions in (
+    ('app_users',{'email':'VARCHAR(254)'}),
+    ('requests',{'planned_event_name':'VARCHAR(250)',
+                 'planned_event_city':'VARCHAR(160)',
+                 'protocol_number':'VARCHAR(50)',
+                 'protocol_at':'TEXT'})
+):
+    existing={col['name'] for col in inspect(engine).get_columns(table)}
+    for column,ddl in additions.items():
+        if column not in existing:
+            with db() as c:c.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}'))
+with db() as c:
+    c.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_app_users_email ON app_users(email)'))
+    c.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_requests_protocol ON requests(protocol_number)'))
+    bootstrap_email=os.getenv('CRI_ADMIN_EMAIL','').strip().lower()
+    if bootstrap_email and re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',bootstrap_email):
+        c.execute(text("""UPDATE app_users SET email=:email
+            WHERE username='admin' AND email IS NULL AND
+            NOT EXISTS(SELECT 1 FROM app_users WHERE email=:email)"""),
+            {'email':bootstrap_email})
+
 def password_hash(password:str)->str:
     salt=secrets.token_bytes(16)
     hashed=hashlib.pbkdf2_hmac('sha256',password.encode(),salt,600000)
@@ -132,7 +157,7 @@ def require_user(req:Request):
           req.headers.get('x-cri-csrf',''),sign('csrf:'+value)):
         raise HTTPException(403,'Protezione CSRF')
     with db() as c:
-        user=fetchone(c,'SELECT id,username,display_name,role,active,auth_version FROM app_users WHERE id=:id',{'id':user_id})
+        user=fetchone(c,'SELECT id,username,email,display_name,role,active,auth_version FROM app_users WHERE id=:id',{'id':user_id})
     if not user or not user['active'] or not hmac.compare_digest(user['auth_version'],auth_version):
         raise HTTPException(401,'Sessione revocata')
     return dict(user,csrf=sign('csrf:'+value))
@@ -158,17 +183,23 @@ def get_token_record(token):
     return r
 
 class Login(BaseModel):
-    username:str
+    email:str
     password:str
 class NewOperator(BaseModel):
-    username:str=Field(min_length=3,max_length=64)
+    email:EmailStr
     display_name:str=Field(min_length=2,max_length=120)
     password:str=Field(min_length=12,max_length=256)
+class UpdateOperatorEmail(BaseModel):
+    email:EmailStr
 class ResetOperatorPassword(BaseModel):
     password:str=Field(min_length=12,max_length=256)
 class OperatorStatus(BaseModel):
     active:bool
-class Create(BaseModel):customer_email:EmailStr;days:int=Field(default=14,ge=1,le=60)
+class Create(BaseModel):
+    customer_email:EmailStr
+    event_name:str=Field(min_length=3,max_length=250)
+    event_city:str=Field(min_length=2,max_length=160)
+    days:int=Field(default=14,ge=1,le=60)
 def check_vat(number):
     number=number.strip().upper().removeprefix('IT')
     if not number:return True
@@ -221,6 +252,7 @@ class Submission(BaseModel):
     org_email:EmailStr
     org_pec:str=Field(default='',max_length=254)
     event_name:str=Field(min_length=3,max_length=250)
+    event_city:str=Field(default='',max_length=160)
     event_dates:str=Field(min_length=8,max_length=4000)
     event_time:str=Field(min_length=3,max_length=5000)
     event_place:str=Field(min_length=5,max_length=400)
