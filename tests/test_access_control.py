@@ -50,6 +50,15 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     # Designated admin has no initial password until activated via its own mailbox.
     assert TestClient(app).post("/api/login",json={
       "email":"amministrazione@crivenezia.it","password":"guess-password"}).status_code==401
+    activation=admin.post(f"/api/users/{second_admin['id']}/send-setup",headers=ah,json={})
+    assert activation.status_code==200 and activation.json()["activation_status"]=="sent"
+    admin_setup_token=re.search(r"/activate/([A-Za-z0-9_-]{35,128})",sent[-1].get_content()).group(1)
+    assert TestClient(app).post("/api/activate/"+admin_setup_token,
+        json={"password":"Administration-password-2026!"}).status_code==200
+    second_admin_client,second_admin_headers=login(
+        "amministrazione@crivenezia.it","Administration-password-2026!")
+    assert second_admin_client.get("/api/users").status_code==200
+    assert second_admin_client.get("/api/settings/mail").status_code==200
     for email,name in (("maria@example.com","Maria"),("luca@example.com","Luca")):
         created=admin.post("/api/users",headers=ah,json={"email":email,"display_name":name})
         assert created.status_code==200,created.text
@@ -76,6 +85,9 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     row=maria.get("/api/requests").json()[0]
     assert row["created_at"] and row["expires_at"] and row["protocol_number"] is None
     assert row["creator_email"]=="maria@example.com"
+    # An administrator sees all operators' requests, unlike ordinary users.
+    assert second_admin_client.get("/api/requests").json()[0]["id"]==req_id
+    assert second_admin_client.get(f"/api/requests/{req_id}").status_code==200
     assert row["event_name"]=="Porte Aperte"
     assert luca.get("/api/requests").json()==[]
     assert luca.get(f"/api/requests/{req_id}").status_code==404
@@ -124,6 +136,12 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
        "participants_athletes":30,"participants_public":300,
        "privacy_ack":True,"declaration":True
     }
+    # Autosave is not a trigger. Finalization fires exactly one notification.
+    plans_before=len([mail for mail in sent if mail.get_content_maintype()=="multipart"])
+    draft_reply=maria.put("/api/r/"+token+"?draft=true",json=data)
+    assert draft_reply.status_code==200,draft_reply.text
+    assert draft_reply.json()["status"]=="draft"
+    assert len([mail for mail in sent if mail.get_content_maintype()=="multipart"])==plans_before
     reply=maria.put("/api/r/"+token,json=data)
     assert reply.status_code==200,reply.text
     receipt=reply.json()
@@ -141,7 +159,8 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     assert len(plan_mails)==1
     email=plan_mails[0]
     rec={x.strip() for x in email["To"].split(",")}
-    assert rec=={"admin@example.com","office@example.com","maria@example.com"}
+    assert rec=={"admin@example.com","office@example.com","maria@example.com",
+                "amministrazione@crivenezia.it"}
     assert "organizzatore@example.com" not in rec
     assert filename in [p.get_filename() for p in email.iter_attachments()]
     deep_link="/?request="+str(req_id)
@@ -151,6 +170,7 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     # Delivery to internal recipients must not include the original organizer.
     assert "organizzatore@example.com" not in rec
     assert maria.put("/api/r/"+token,json=data).status_code==410
+    assert len([mail for mail in sent if mail.get_content_maintype()=="multipart"])==1
 
     # New-event vs copy-previous choice: only the same recipient email and
     # same CRI creator may see completed past event fields (archived or not).
