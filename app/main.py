@@ -669,10 +669,14 @@ def external(token:str,request:Request):
         return RedirectResponse(url='/r/'+token+'#invio-non-registrato',
             status_code=303,headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
     return FileResponse(BASE/'static'/'form.html',headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
-# Previous completed events may be reused only when both organizer email
+# Previous completed requests may be reused only when both organizer email
 # and CRI creator account match. Never expose other operators' requests.
-# Only event-level fields are returned: no dates, fiscal or billing identities.
-REUSABLE_EVENT_FIELDS=('event_name','event_city','event_place','event_description',
+# The form explicitly lets the recipient select organization and event details.
+# Never reuse invitation email, old event dates, old consent or internal protocol.
+REUSABLE_EVENT_FIELDS=(
+ 'org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi',
+ 'org_phone','org_pec',
+ 'event_name','event_city','event_place','event_description',
  'reference_name','reference_phone','event_type','recurrence','location_type',
  'road_closure','participants_athletes','participants_public','children','elderly',
  'disabled','risk_options','additional_notes')
