@@ -334,7 +334,7 @@ def previous_events(token:str):
     with db() as c:
         previous=c.execute(text("""SELECT id,payload FROM requests
             WHERE LOWER(customer_email)=:email AND id<>:id
-            AND status IN ('submitted','approved') ORDER BY id DESC LIMIT 30"""),
+            AND archived_at IS NOT NULL AND status IN ('submitted','approved') ORDER BY id DESC LIMIT 30"""),
             {'email':current['customer_email'].lower(),'id':current['id']}).mappings().all()
     results=[]
     for item in previous:
