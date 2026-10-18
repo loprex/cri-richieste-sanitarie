@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr, model_validator
 from sqlalchemy import create_engine, text, inspect
@@ -112,7 +112,8 @@ with db() as c:
     if user_count==0:
         c.execute(text("""INSERT INTO app_users
             (username,display_name,password_hash,role,active,auth_version,created_at)
-            VALUES('admin','Amministratore CRI Venezia',:pw,'admin',TRUE,:version,:at)"""),
+            VALUES('admin','Amministratore CRI Venezia',:pw,'admin',TRUE,:version,:at)
+            ON CONFLICT(username) DO NOTHING"""),
             {'pw':password_hash(PASSWORD),'version':secrets.token_hex(16),'at':iso()})
 
 def audit(c,id,action):c.execute(text('INSERT INTO audit(request_id,action,created_at) VALUES(:id,:action,:at)'),{'id':id,'action':action,'at':iso()})
@@ -444,7 +445,7 @@ def create(request:Request,body:Create):
     invitation_status=send_invitation(id,str(body.customer_email),link,body.days)
     return {'id':id,'url':link,'expires_in_days':body.days,'invitation_status':invitation_status}
 @app.get('/r/{token}')
-def external(token:str):
+def external(token:str,request:Request):
     try:
         get_token_record(token)
     except HTTPException as exc:
@@ -460,6 +461,11 @@ def external(token:str):
 <a href="tel:+39041982333"><strong>041 982333</strong></a>.</p>
 </section></main></body></html>""",status_code=410)
         raise
+    if request.url.query:
+        # A broken old form may have submitted PII using GET. Never process GET
+        # as submission; redirect to a clean URL and explain the failure.
+        return RedirectResponse(url='/r/'+token+'#invio-non-registrato',
+            status_code=303,headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
     return FileResponse(BASE/'static'/'form.html',headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
 # Reuse event-only information from completed requests sent to the same email.
 # An invitation token grants access solely to that mailbox's historical EVENT fields.
