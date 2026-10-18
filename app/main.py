@@ -91,6 +91,7 @@ def get_token_record(token):
     if not r:raise HTTPException(404,'Link non trovato')
     if r.get('archived_at'):raise HTTPException(410,'Link revocato: richiesta archiviata')
     if datetime.fromisoformat(r['expires_at'])<now():raise HTTPException(410,'Link scaduto')
+    if r['status'] not in ('pending','draft'):raise HTTPException(410,'Link non più attivo: richiesta già conclusa')
     return r
 
 class Login(BaseModel):password:str
