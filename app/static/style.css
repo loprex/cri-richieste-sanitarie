@@ -23,3 +23,5 @@
 .event-choice-list .check{padding:8px 10px;border:1px solid #edf0f3;border-radius:8px;background:#fff}
 .reuse-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 18px}
 @media(max-width:660px){.event-reuse-modes,.reuse-fields{grid-template-columns:1fr}.event-reuse-details{padding:12px}}
+
+.address-status{min-height:18px;font-size:12px;color:#526173;margin-top:5px;line-height:1.45}
