@@ -52,3 +52,14 @@
 .previous-event-side small{font-size:12px;white-space:nowrap}
 .previous-events-empty{padding:22px 14px;text-align:center;border:1px dashed #cbd3dd;border-radius:12px;background:#fff;color:#526173}
 @media(max-width:600px){.previous-event-card{align-items:flex-start;flex-wrap:wrap;padding:13px}.previous-event-card:has(input:checked){padding:12px}.previous-event-side{flex-basis:100%;padding-left:33px;flex-direction:row;align-items:center}.previous-event-meta{gap:6px 12px}.previous-years-field,.previous-years-field select{min-width:150px}}
+
+/* User access controls and accessible self-service password recovery */
+.link-button{background:transparent;color:#a6112b;padding:4px 0;border:0;text-decoration:underline;text-underline-offset:3px;font-size:14px;font-weight:700}
+.link-button:hover{color:#731326}
+.link-button:focus-visible{outline:2px solid #b5162e;outline-offset:4px}
+.password-help{background:#fafbfd;padding:18px;border:1px solid #dce2eb;border-radius:12px;margin:12px 0 0;max-width:620px}
+.password-help h2{margin:0 0 10px}
+#forgotPasswordStatus{line-height:1.55}
+.account-locked{color:#a6112b;font-weight:750}
+.statusButton,.unlockButton{display:inline-block;margin:3px 5px 3px 0!important;white-space:nowrap}
+@media(max-width:660px){.statusButton,.unlockButton{white-space:normal}}
