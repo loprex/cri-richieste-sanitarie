@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Imposta password | CRI Venezia</title>
+<link rel="icon" href="/static/logo-cri-venezia.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/style.css"></head>
+<body><header><img class="cri-logo" src="/static/logo-cri-venezia.svg" alt="Logo CRI Venezia">
+<div><div class="brand">Croce Rossa Italiana – Comitato di Venezia</div><div class="sub">Prima attivazione operatore</div></div></header>
+<main><section class="panel"><h1>Imposta la tua password</h1>
+<p>La password deve contenere almeno 12 caratteri. Il link può essere utilizzato una sola volta.</p>
+<div class="notice hidden" id="activateNotice" role="status" aria-live="polite"></div>
+<form id="activationForm" method="post" action="#">
+<div><label for="newPassword">Nuova password</label><input id="newPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></div>
+<div><label for="confirmPassword">Conferma password</label><input id="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></div>
+<p><button id="activateSubmit" type="submit" disabled>Caricamento…</button></p></form>
+<p><a href="/">Vai alla pagina di accesso</a></p></section></main>
+<script src="/static/activate.js?v=20261018-invite-v1"></script>
+</body></html>
