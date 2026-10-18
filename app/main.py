@@ -421,11 +421,12 @@ def send_invitation(request_id:int, recipient:str, url:str, days:int)->str:
 
 @app.post('/api/requests')
 def create(request:Request,body:Create):
-    require_admin(request)
+    user=require_user(request)
     token=secrets.token_urlsafe(36)
     with db() as c:
         params={'h':digest(token),'email':str(body.customer_email),'created':iso(),'expires':(now()+timedelta(days=body.days)).isoformat(timespec='seconds')}
-        id=c.execute(text("INSERT INTO requests(token_hash,customer_email,created_at,expires_at,status,payload,notes) VALUES(:h,:email,:created,:expires,'pending','{}','') RETURNING id"),params).scalar_one()
+        params['owner']=user['id']
+        id=c.execute(text("INSERT INTO requests(token_hash,customer_email,created_at,expires_at,status,payload,notes,owner_user_id) VALUES(:h,:email,:created,:expires,'pending','{}','',:owner) RETURNING id"),params).scalar_one()
         audit(c,id,'created')
     link=f'{PUBLIC_BASE_URL}/r/{token}'
     invitation_status=send_invitation(id,str(body.customer_email),link,body.days)
@@ -447,7 +448,7 @@ def external(token:str):
 <a href="tel:+39041982333"><strong>041 982333</strong></a>.</p>
 </section></main></body></html>""",status_code=410)
         raise
-    return FileResponse(BASE/'static'/'form.html')
+    return FileResponse(BASE/'static'/'form.html',headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
 # Reuse event-only information from completed requests sent to the same email.
 # An invitation token grants access solely to that mailbox's historical EVENT fields.
 REUSABLE_EVENT_FIELDS=('event_name','event_place','event_description','reference_name',
@@ -500,26 +501,35 @@ def save(token:str,body:Submission,draft:bool=False):
             mail='failed'
     return {'ok':True,'status':'draft' if draft else 'submitted','mail_status':mail}
 @app.get('/api/requests')
-def list_requests(request:Request, view:str='all'):
-    require_admin(request)
+def list_requests(request:Request,view:str='all'):
+    user=require_user(request)
     clauses={
-        'all':'archived_at IS NULL',
-        'compiled':"archived_at IS NULL AND status IN ('submitted','approved')",
-        'pending':"archived_at IS NULL AND status IN ('pending','draft')",
-        'archived':'archived_at IS NOT NULL'
+        'all':'r.archived_at IS NULL',
+        'compiled':"r.archived_at IS NULL AND r.status IN ('submitted','approved')",
+        'pending':"r.archived_at IS NULL AND r.status IN ('pending','draft')",
+        'archived':'r.archived_at IS NOT NULL'
     }
     if view not in clauses:raise HTTPException(422,'Filtro non valido')
-    query='SELECT id,customer_email,created_at,submitted_at,approved_at,status,payload,mailed_at,mail_error,archived_at FROM requests WHERE '+clauses[view]+' ORDER BY id DESC LIMIT 300'
-    with db() as c:rows=c.execute(text(query)).mappings().all()
+    query="""SELECT r.id,r.customer_email,r.created_at,r.expires_at,r.submitted_at,
+        r.approved_at,r.status,r.payload,r.mailed_at,r.mail_error,r.archived_at,
+        r.owner_user_id,u.username AS creator_username,u.display_name AS creator_name
+        FROM requests r LEFT JOIN app_users u ON u.id=r.owner_user_id
+        WHERE """+clauses[view]+"""
+        AND (:admin = TRUE OR r.owner_user_id=:uid) ORDER BY r.id DESC LIMIT 300"""
+    with db() as c:
+        rows=c.execute(text(query),{'admin':user['role']=='admin','uid':user['id']}).mappings().all()
     result=[]
     for r in rows:
-        p=json.loads(r['payload'])
-        result.append({k:r[k] for k in ('id','customer_email','created_at','submitted_at','approved_at','status','mailed_at','mail_error','archived_at')}|{'event_name':p.get('event_name',''),'org_name':p.get('org_name','')})
+        payload=json.loads(r['payload'])
+        result.append({k:r[k] for k in ('id','customer_email','created_at','expires_at',
+            'submitted_at','approved_at','status','mailed_at','mail_error','archived_at',
+            'owner_user_id','creator_username','creator_name')}|
+            {'event_name':payload.get('event_name',''),'org_name':payload.get('org_name','')})
     return result
 
 @app.post('/api/requests/{id}/archive')
 def set_archived(id:int, request:Request, archived:bool=True):
-    require_admin(request)
+    require_request_access(request,id)
     with db() as c:
         r=fetchone(c,'SELECT id,archived_at FROM requests WHERE id=:id',{'id':id})
         if not r:raise HTTPException(404,'Richiesta inesistente')
@@ -529,10 +539,10 @@ def set_archived(id:int, request:Request, archived:bool=True):
 
 @app.get('/api/requests/{id}')
 def detail(id:int,request:Request):
-    require_admin(request)
+    require_request_access(request,id)
     with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
     if not r:raise HTTPException(404,'Richiesta inesistente')
-    return {k:r[k] for k in ('id','customer_email','created_at','submitted_at','approved_at','status','notes','mailed_at','mail_error','archived_at')}|{'data':json.loads(r['payload'])}
+    return {k:r[k] for k in ('id','customer_email','created_at','submitted_at','approved_at','status','notes','mailed_at','mail_error','archived_at','created_at','expires_at','owner_user_id')}|{'data':json.loads(r['payload'])}
 @app.post('/api/requests/{id}/approve')
 def approve(id:int,body:Approval,request:Request):
     require_admin(request)
@@ -544,7 +554,7 @@ def approve(id:int,body:Approval,request:Request):
     return {'ok':True}
 @app.get('/api/requests/{id}/excel')
 def excel(id:int,request:Request):
-    require_admin(request)
+    require_request_access(request,id)
     with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
     if not r:raise HTTPException(404,'Richiesta inesistente')
     if r['status'] not in ('submitted','approved'):raise HTTPException(409,'Invio non ancora completato')
@@ -552,7 +562,7 @@ def excel(id:int,request:Request):
     return StreamingResponse(io.BytesIO(content),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="piano_sanitario_{id}.xlsx"'})
 @app.get('/api/requests/{id}/data')
 def export_data(id:int,request:Request):
-    require_admin(request)
+    require_request_access(request,id)
     with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
     if not r:raise HTTPException(404,'Richiesta inesistente')
     d={k:r[k] for k in ('id','created_at','submitted_at','approved_at','status','notes')}|{'data':json.loads(r['payload'])}
@@ -573,7 +583,7 @@ def update_mail_settings(body:MailSettings,request:Request):
     return {'ok':True}
 @app.post('/api/requests/{id}/send-email')
 def resend(id:int,request:Request):
-    require_admin(request)
+    require_request_access(request,id)
     with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
     if not r:raise HTTPException(404,'Richiesta inesistente')
     outcome=mail_request(id,json.loads(r['payload']),force=True)
