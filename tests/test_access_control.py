@@ -50,11 +50,24 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     # Designated admin has no initial password until activated via its own mailbox.
     assert TestClient(app).post("/api/login",json={
       "email":"amministrazione@crivenezia.it","password":"guess-password"}).status_code==401
+    # TEST must never contact the designated administration mailbox, even for
+    # password setup or SMTP diagnosis; no token or current password is revoked.
+    assert admin.post(f"/api/users/{second_admin['id']}/send-setup",
+        headers=ah,json={}).status_code==409
+    assert backend.send_password_setup('amministrazione@crivenezia.it','Admin','https://example.com/activate/mock')=='suppressed_until_production'
+    assert backend.send_invitation(1,'amministrazione@crivenezia.it','https://example.com/r/mock',14)=='suppressed_until_production'
+    assert len(sent)==0
+    # Prove that the full admin role continues to work AFTER activation. All
+    # email in this test uses FakeSMTP; production opt-in is momentary.
+    monkeypatch.setenv("CRI_DEPLOYMENT_ENV","production")
+    monkeypatch.setenv("CRI_ENABLE_ADMINISTRATION_EMAIL","true")
     activation=admin.post(f"/api/users/{second_admin['id']}/send-setup",headers=ah,json={})
     assert activation.status_code==200 and activation.json()["activation_status"]=="sent"
     admin_setup_token=re.search(r"/activate/([A-Za-z0-9_-]{35,128})",sent[-1].get_content()).group(1)
     assert TestClient(app).post("/api/activate/"+admin_setup_token,
         json={"password":"Administration-password-2026!"}).status_code==200
+    monkeypatch.setenv("CRI_DEPLOYMENT_ENV","test")
+    monkeypatch.setenv("CRI_ENABLE_ADMINISTRATION_EMAIL","false")
     second_admin_client,second_admin_headers=login(
         "amministrazione@crivenezia.it","Administration-password-2026!")
     assert second_admin_client.get("/api/users").status_code==200
@@ -114,6 +127,11 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
        "enabled":True,"recipients":"office@example.com;admin@example.com",
        "subject":"Piano Sanitario {protocol} - {event}","body":"Evento {event} {protocol_date}"})
     assert settings.status_code==200,settings.text
+    assert admin.get("/api/settings/mail").json()["administration_mail_paused"] is True
+    blocked=admin.post("/api/settings/mail/test",headers=ah,json={
+        "to":"amministrazione@crivenezia.it"})
+    assert blocked.status_code==409
+    assert not any(mail["To"]=="amministrazione@crivenezia.it" for mail in sent)
     test_email=admin.post("/api/settings/mail/test",headers=ah,json={
        "to":"office@example.com"})
     assert test_email.status_code==200,test_email.text
@@ -159,8 +177,8 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     assert len(plan_mails)==1
     email=plan_mails[0]
     rec={x.strip() for x in email["To"].split(",")}
-    assert rec=={"admin@example.com","office@example.com","maria@example.com",
-                "amministrazione@crivenezia.it"}
+    assert rec=={"admin@example.com","office@example.com","maria@example.com"}
+    assert "amministrazione@crivenezia.it" not in rec
     assert "organizzatore@example.com" not in rec
     assert filename in [p.get_filename() for p in email.iter_attachments()]
     deep_link="/?request="+str(req_id)
