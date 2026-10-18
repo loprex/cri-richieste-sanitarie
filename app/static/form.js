@@ -57,7 +57,7 @@ async function loadPreviousEvents(){
     const label=document.createElement('label');
     label.className='check';
     const input=document.createElement('input');
-    input.type='checkbox';input.className='previousChoice';input.value=String(item.id);
+    input.type='radio';input.name='previousEventChoice';input.className='previousChoice';input.value=String(item.id);
     const date=item.submitted_at
       ?new Date(item.submitted_at).toLocaleDateString('it-IT')
       :'data non disponibile';
@@ -97,28 +97,26 @@ async function loadPreviousEvents(){
  }
 }
 document.getElementById('reuseEvent').onclick=()=>{
- const ids=[...document.querySelectorAll('.previousChoice:checked')].map(x=>x.value);
+ const chosen=document.querySelector('input[name="previousEventChoice"]:checked');
  const selected=new Set([...document.querySelectorAll('.reuseField:checked')].map(x=>x.value));
  const status=document.getElementById('reuseStatus');
- if(!ids.length){status.textContent='Seleziona almeno un evento precedente.';return}
+ if(!chosen){status.textContent='Seleziona un evento precedente da cui copiare i dati.';return}
  if(!selected.size){status.textContent='Seleziona almeno un dato da copiare.';return}
- if(!confirm('Copiare i dati dell’organizzatore e dell’evento selezionati? Se gli eventi hanno valori diversi, prevale l’ultimo selezionato. L’email di invito, i consensi, le date e gli orari rimarranno invariati.'))return;
+ if(!confirm('Copiare i campi scelti dall’evento selezionato? L’email dell’invito, i consensi, le date e gli orari rimarranno invariati.'))return;
  let count=0;
- for(const id of ids){
-  const source=previousEvents.find(x=>String(x.id)===id);
-  if(!source)continue;
-  for(const [key,value] of Object.entries(source.data||{})){
-   if(!selected.has(key)||value===null||value===undefined||value==='')continue;
-   if(key==='risk_options'){
-    document.querySelectorAll('[name=risk_options]').forEach(box=>
-      box.checked=Array.isArray(value)&&value.includes(box.value));
-    count++;continue;
-   }
-   const target=form.elements[key];
-   if(!target)continue;
-   target.value=typeof value==='boolean'?String(value):value;
-   count++;
+ const source=previousEvents.find(x=>String(x.id)===chosen.value);
+ if(!source){status.textContent='L’evento selezionato non è più disponibile.';return}
+ for(const [key,value] of Object.entries(source.data||{})){
+  if(!selected.has(key)||value===null||value===undefined||value==='')continue;
+  if(key==='risk_options'){
+   document.querySelectorAll('[name=risk_options]').forEach(box=>
+     box.checked=Array.isArray(value)&&value.includes(box.value));
+   count++;continue;
   }
+  const target=form.elements[key];
+  if(!target)continue;
+  target.value=typeof value==='boolean'?String(value):value;
+  count++;
  }
  reusedData=count>0;
  status.textContent=count
