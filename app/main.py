@@ -25,6 +25,7 @@ PASSWORD=os.getenv('ADMIN_PASSWORD','')
 SESSION_SECRET=os.getenv('SESSION_SECRET','')
 PUBLIC_BASE_URL=os.getenv('PUBLIC_BASE_URL','http://localhost:8000').rstrip('/')
 SECURE=os.getenv('COOKIE_SECURE','true').lower()=='true'
+ADDITIONAL_ADMIN_EMAIL='amministrazione@crivenezia.it'
 if len(PASSWORD)<24 or len(SESSION_SECRET)<32:raise RuntimeError('Set ADMIN_PASSWORD (min 24) and SESSION_SECRET (min 32)')
 app=FastAPI(title='CRI Richieste Assistenza Sanitaria',docs_url=None,redoc_url=None,openapi_url=None)
 app.mount('/static',StaticFiles(directory=BASE/'static'),name='static')
@@ -154,6 +155,19 @@ with db() as c:
           WHERE username='admin' AND email IS NULL AND
           NOT EXISTS(SELECT 1 FROM app_users WHERE email=:email)"""),
           {'email':bootstrap_email})
+
+# Reconcile the requested second CRI administrator on deployment. Existing
+# accounts must be active and have completed the personal email setup before
+# they can sign in; upgrading the role never bypasses activation.
+with db() as c:
+    secondary=fetchone(c,"""SELECT id,role FROM app_users
+      WHERE LOWER(TRIM(email))=:email""",{'email':ADDITIONAL_ADMIN_EMAIL})
+    if secondary and secondary['role']!='admin':
+        c.execute(text("""UPDATE app_users SET role='admin',auth_version=:version
+          WHERE id=:id"""),{'id':secondary['id'],'version':secrets.token_hex(16)})
+        c.execute(text("""INSERT INTO audit(request_id,action,created_at)
+           VALUES(NULL,:action,:at)"""),
+          {'action':'secondary_admin_granted_'+str(secondary['id']),'at':iso()})
 
 def audit(c,id,action):c.execute(text('INSERT INTO audit(request_id,action,created_at) VALUES(:id,:action,:at)'),{'id':id,'action':action,'at':iso()})
 def sign(v):return hmac.new(SESSION_SECRET.encode(),v.encode(),hashlib.sha256).hexdigest()
@@ -539,12 +553,14 @@ def create_user(body:NewOperator,request:Request):
         if fetchone(c,'SELECT id FROM app_users WHERE LOWER(email)=:email',{'email':email}):
             raise HTTPException(409,'Email già assegnata a un account')
         username='account-'+secrets.token_hex(12)
+        assigned_role='admin' if email==ADDITIONAL_ADMIN_EMAIL else 'operator'
         uid=c.execute(text("""INSERT INTO app_users
             (username,email,display_name,password_hash,role,active,
             auth_version,created_at,password_setup_required)
-            VALUES(:username,:email,:display_name,:pw,'operator',TRUE,:version,:at,TRUE)
+            VALUES(:username,:email,:display_name,:pw,:role,TRUE,:version,:at,TRUE)
             RETURNING id"""),
             {'username':username,'email':email,'display_name':body.display_name.strip(),
+             'role':assigned_role,
              'pw':'!','version':secrets.token_hex(16),'at':iso()}).scalar_one()
         audit(c,None,'user_created_'+str(uid))
     to,name,link=setup_link_for_user(uid)
@@ -560,9 +576,15 @@ def set_user_email(id:int,body:UpdateOperatorEmail,request:Request):
         if not user:raise HTTPException(404,'Utente non trovato')
         existing=fetchone(c,'SELECT id FROM app_users WHERE LOWER(email)=:email',{'email':email})
         if existing and existing['id']!=id:raise HTTPException(409,'Email già assegnata a un account')
+        # Assignment of the designated CRI mailbox is an admin-only action.
+        # This address must receive admin privileges, while every other user's
+        # existing role stays unchanged.
+        designated_role='admin' if email==ADDITIONAL_ADMIN_EMAIL else None
         c.execute(text("""UPDATE app_users SET email=:email,auth_version=:version,
+           role=COALESCE(:role,role),
            setup_token_hash=NULL,setup_expires_at=NULL WHERE id=:id"""),
-            {'email':email,'version':secrets.token_hex(16),'id':id})
+            {'email':email,'role':designated_role,
+             'version':secrets.token_hex(16),'id':id})
         audit(c,None,'user_email_updated_'+str(id))
     return {'ok':True,'sessions_revoked':True}
 
