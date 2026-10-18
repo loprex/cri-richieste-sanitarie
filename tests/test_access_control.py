@@ -58,6 +58,95 @@ def test_previous_event_year_filter_metadata():
     assert backend.previous_event_years({},
       "2024-01-01T09:00:00+01:00")==([2024],"submission")
 
+def test_login_three_failures_manual_lock_and_password_recovery(monkeypatch):
+    """Test DB-persistent lock, single-use recovery and admin-only manual unlocking."""
+    import uuid
+    backend._LOGIN_ATTEMPTS.clear()
+    backend._RESET_REQUESTS.clear()
+    delivered=[]
+    class SMTP:
+        def __init__(self,*a,**k):pass
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
+        def starttls(self,**k):pass
+        def login(self,*a):pass
+        def send_message(self,email):delivered.append(email)
+    monkeypatch.setenv("SMTP_HOST","smtp.example.com")
+    monkeypatch.setenv("SMTP_FROM","sender@example.com")
+    monkeypatch.setenv("SMTP_USER","sender@example.com")
+    monkeypatch.setenv("CRI_DEPLOYMENT_ENV","test")
+    monkeypatch.setenv("CRI_ENABLE_ADMINISTRATION_EMAIL","false")
+    monkeypatch.setattr(backend.smtplib,"SMTP",SMTP)
+    email="lock-"+uuid.uuid4().hex[:10]+"@example.com"
+    old_password="Correct-password-2026!"
+    new_password="Recovered-password-2026!"
+    with backend.db() as c:
+        uid=c.execute(backend.text("""INSERT INTO app_users
+           (username,email,display_name,password_hash,role,active,
+            auth_version,created_at)
+           VALUES(:username,:email,'Utente bloccabile',:password,'operator',TRUE,:version,:at)
+           RETURNING id"""),
+           {'username':'user-'+uuid.uuid4().hex[:16],'email':email,
+            'password':backend.password_hash(old_password),
+            'version':uuid.uuid4().hex,'at':backend.iso()}).scalar_one()
+    admin,ah=login("admin@example.com",os.environ["ADMIN_PASSWORD"])
+    c=TestClient(app)
+    for expected in (401,401,423):
+        attempt=c.post("/api/login",json={"email":email,"password":"Wrong-password-000"})
+        assert attempt.status_code==expected,attempt.text
+    with backend.db() as tx:
+        row=backend.fetchone(tx,"SELECT failed_login_attempts,auto_locked_at FROM app_users WHERE id=:id",{"id":uid})
+    assert row["failed_login_attempts"]==3 and row["auto_locked_at"]
+    assert c.post("/api/login",json={"email":email,"password":old_password}).status_code==423
+    users=admin.get("/api/users").json()
+    found=next(item for item in users if item["id"]==uid)
+    assert found["auto_locked_at"] and found["failed_login_attempts"]==3
+
+    # Always return the same response for valid, unknown or suppressed addresses.
+    hidden=c.post("/api/password/forgot",json={"email":"nobody-registered@example.com"})
+    issued=c.post("/api/password/forgot",json={"email":email})
+    suppressed=c.post("/api/password/forgot",json={"email":"amministrazione@crivenezia.it"})
+    assert hidden.status_code==issued.status_code==suppressed.status_code==200
+    assert hidden.json()==issued.json()==suppressed.json()
+    assert len(delivered)==1 and delivered[0]["To"]==email
+    assert delivered[0]["Subject"]=="CRI Venezia - Recupero password"
+    token=re.search(r"/reset/([A-Za-z0-9_-]{35,128})",delivered[0].get_content()).group(1)
+    assert c.get("/reset/"+token).status_code==200
+    reset=c.post("/api/password/reset/"+token,json={"password":new_password})
+    assert reset.status_code==200,reset.text
+    assert c.post("/api/password/reset/"+token,json={"password":new_password}).status_code==410
+    assert c.get("/reset/"+token).status_code==410
+    assert c.post("/api/login",json={"email":email,"password":new_password}).status_code==200
+    with backend.db() as tx:
+        row=backend.fetchone(tx,"SELECT failed_login_attempts,auto_locked_at FROM app_users WHERE id=:id",{"id":uid})
+    assert row["failed_login_attempts"]==0 and row["auto_locked_at"] is None
+
+    # Auto-block can also be lifted directly by another administrator.
+    for expected in (401,401,423):
+        attempt=c.post("/api/login",json={"email":email,"password":"Wrong-again-000"})
+        assert attempt.status_code==expected,attempt.text
+    assert c.post(f"/api/users/{uid}/unlock",json={}).status_code==401
+    assert admin.post(f"/api/users/{uid}/unlock",headers=ah,json={}).status_code==200
+    signed,_=login(email,new_password)
+    assert signed.get("/api/session").status_code==200
+    assert admin.put(f"/api/users/{uid}/status",headers=ah,json={"active":False}).status_code==200
+    assert signed.get("/api/session").status_code==401
+    assert c.post("/api/login",json={"email":email,"password":new_password}).status_code==423
+    assert admin.post(f"/api/users/{uid}/unlock",headers=ah,json={}).status_code==409
+    # Manual block cannot be bypassed with a self-service reset request.
+    mails_before=len(delivered)
+    assert c.post("/api/password/forgot",json={"email":email}).status_code==200
+    assert len(delivered)==mails_before
+    assert admin.put(f"/api/users/{uid}/status",headers=ah,json={"active":True}).status_code==200
+    assert c.post("/api/login",json={"email":email,"password":new_password}).status_code==200
+    # A currently signed-in administrator cannot block their own account.
+    assert admin.put(f"/api/users/{ah_user_id(admin)}/status",headers=ah,json={"active":False}).status_code==409
+
+
+def ah_user_id(admin):
+    return admin.get("/api/session").json()["user_id"]
+
+
 def test_user_activation_and_case_lifecycle(monkeypatch):
     monkeypatch.setattr(backend,"now_venice",lambda:"2026-10-18T19:00:00+02:00")
     sent=[]
