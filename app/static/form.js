@@ -1,32 +1,105 @@
 const token=location.pathname.split('/').pop(),notice=document.getElementById('notice'),form=document.getElementById('form');
 let previousEvents=[];
-const reuseNames={event_name:'Nome evento',event_place:'Luogo',event_description:'Descrizione',reference_name:'Referente',reference_phone:'Telefono referente',event_type:'Tipo evento',recurrence:'Frequenza',location_type:'Caratteristiche del luogo',road_closure:'Modifica viabilità',participants_athletes:'Partecipanti attivi',participants_public:'Pubblico',children:'Bambini',elderly:'Anziani',disabled:'Persone con disabilità',risk_options:'Fattori di rischio',additional_notes:'Altre note'};
+let reusedData=false;
+const reuseNames={
+ event_name:'Nome Evento / Società organizzatrice',
+ event_city:'Città evento',
+ event_place:'Luogo di svolgimento',
+ event_description:'Descrizione evento',
+ reference_name:'Referente sul posto',
+ reference_phone:'Telefono referente',
+ event_type:'Tipo evento',
+ recurrence:'Frequenza',
+ location_type:'Caratteristiche del luogo',
+ road_closure:'Modifica della viabilità',
+ participants_athletes:'Partecipanti attivi',
+ participants_public:'Pubblico / spettatori / visitatori',
+ children:'Bambini',
+ elderly:'Anziani',
+ disabled:'Persone con disabilità',
+ risk_options:'Fattori di rischio',
+ additional_notes:'Altre note'
+};
+const historyChoices=[...document.querySelectorAll('input[name=historyMode]')];
+function setHistoryMode(mode){
+ const details=document.getElementById('previousEventsBox');
+ details.classList.toggle('hidden',mode!=='copy');
+ if(mode==='new'&&reusedData){
+  document.getElementById('reuseStatus').textContent=
+    'I dati che hai già importato rimangono nel modulo: puoi modificarli manualmente.';
+ }
+}
+historyChoices.forEach(input=>input.addEventListener('change',()=>{
+ if(input.checked)setHistoryMode(input.value);
+}));
 async function loadPreviousEvents(){
  try{
-  const response=await fetch('/api/r/'+encodeURIComponent(token)+'/previous-events');
+  const response=await fetch('/api/r/'+encodeURIComponent(token)+'/previous-events',{cache:'no-store'});
   if(!response.ok)return;
-  previousEvents=await response.json();
-  if(!previousEvents.length)return;
+  const items=await response.json();
+  if(!Array.isArray(items)||items.length===0)return;
+  previousEvents=items;
   const choices=document.getElementById('previousEventChoices');
-  for(const ev of previousEvents){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.className='previousChoice';input.value=String(ev.id);label.append(input,document.createTextNode(' '+ev.name+' (richiesta #'+ev.id+')'));choices.append(label)}
+  choices.replaceChildren();
+  for(const item of previousEvents){
+    const label=document.createElement('label');
+    label.className='check';
+    const input=document.createElement('input');
+    input.type='checkbox';input.className='previousChoice';input.value=String(item.id);
+    const date=item.submitted_at
+      ?new Date(item.submitted_at).toLocaleDateString('it-IT')
+      :'data non disponibile';
+    label.append(input,document.createTextNode(' '+item.name+' · '+date+' · richiesta #'+item.id));
+    choices.append(label);
+  }
   const fieldsBox=document.getElementById('reuseFields');
-  for(const [key,name] of Object.entries(reuseNames)){const label=document.createElement('label');label.className='check';const input=document.createElement('input');input.type='checkbox';input.className='reuseField';input.value=key;input.checked=true;label.append(input,document.createTextNode(' '+name));fieldsBox.append(label)}
-  document.getElementById('previousEventsBox').classList.remove('hidden');
- }catch(e){/* Manual completion remains available. */}
+  fieldsBox.replaceChildren();
+  for(const [key,name] of Object.entries(reuseNames)){
+    const label=document.createElement('label');
+    label.className='check';
+    const input=document.createElement('input');
+    input.type='checkbox';input.className='reuseField';input.value=key;
+    // Retain the planned new event title and city unless explicitly requested.
+    input.checked=key!=='event_name'&&key!=='event_city';
+    label.append(input,document.createTextNode(' '+name));
+    fieldsBox.append(label);
+  }
+  document.getElementById('previousEventsSummary').textContent=
+    'Sono presenti '+previousEvents.length+' richieste completate in precedenza per questa email.';
+  document.getElementById('previousEventsChooser').classList.remove('hidden');
+  setHistoryMode('new');
+ }catch(error){
+  // The form remains available for new data even if history cannot load.
+ }
 }
 document.getElementById('reuseEvent').onclick=()=>{
  const ids=[...document.querySelectorAll('.previousChoice:checked')].map(x=>x.value);
- const fields=new Set([...document.querySelectorAll('.reuseField:checked')].map(x=>x.value));
- if(!ids.length){message('Seleziona almeno un evento archiviato.',true);return}
- if(!fields.size){message('Seleziona almeno un campo da importare.',true);return}
- if(!confirm('Importare i campi selezionati dagli eventi archiviati? In caso di valori diversi prevale l’ultimo evento selezionato. Date e orari resteranno invariati.'))return;
- for(const id of ids){const event=previousEvents.find(x=>String(x.id)===id);if(!event)continue;
-  for(const [key,value] of Object.entries(event.data)){if(!fields.has(key))continue;
-    if(key==='risk_options'){document.querySelectorAll('[name=risk_options]').forEach(c=>c.checked=Array.isArray(value)&&value.includes(c.value));continue}
-    const el=form.elements[key];if(el)el.value=typeof value==='boolean'?String(value):value;
+ const selected=new Set([...document.querySelectorAll('.reuseField:checked')].map(x=>x.value));
+ const status=document.getElementById('reuseStatus');
+ if(!ids.length){status.textContent='Seleziona almeno un evento precedente.';return}
+ if(!selected.size){status.textContent='Seleziona almeno un dato da copiare.';return}
+ if(!confirm('Copiare i dati scelti? Se gli eventi hanno valori diversi, prevale l’ultimo selezionato. Le date e gli orari del nuovo evento rimarranno invariati.'))return;
+ let count=0;
+ for(const id of ids){
+  const source=previousEvents.find(x=>String(x.id)===id);
+  if(!source)continue;
+  for(const [key,value] of Object.entries(source.data||{})){
+   if(!selected.has(key)||value===null||value===undefined||value==='')continue;
+   if(key==='risk_options'){
+    document.querySelectorAll('[name=risk_options]').forEach(box=>
+      box.checked=Array.isArray(value)&&value.includes(box.value));
+    count++;continue;
+   }
+   const target=form.elements[key];
+   if(!target)continue;
+   target.value=typeof value==='boolean'?String(value):value;
+   count++;
   }
  }
- message('Dati importati: controlla le informazioni e inserisci nuove date e fasce orarie.');
+ reusedData=count>0;
+ status.textContent=count
+   ?'Dati copiati: controlla e aggiorna le informazioni, soprattutto luogo, partecipanti e contatti. Inserisci nuove date e orari.'
+   :'Nessun valore disponibile per i campi scelti. Seleziona altri dati.';
 };
 const slotContainer=document.getElementById('eventSlots');
 function addSlot(date='',start='',end=''){
