@@ -104,7 +104,10 @@ if 'owner_user_id' not in {col['name'] for col in inspect(engine).get_columns('r
 # Add optional email identities, event labels and internal submission protocol.
 # Legacy users without an email may sign in by username until their email is set.
 for table,additions in (
-    ('app_users',{'email':'VARCHAR(254)'}),
+    ('app_users',{'email':'VARCHAR(254)',
+                  'setup_token_hash':'VARCHAR(64)',
+                  'setup_expires_at':'TEXT',
+                  'password_setup_required':'BOOLEAN NOT NULL DEFAULT FALSE'}),
     ('requests',{'planned_event_name':'VARCHAR(250)',
                  'planned_event_city':'VARCHAR(160)',
                  'protocol_number':'VARCHAR(50)',
@@ -191,10 +194,9 @@ class Login(BaseModel):
 class NewOperator(BaseModel):
     email:EmailStr
     display_name:str=Field(min_length=2,max_length=120)
-    password:str=Field(min_length=12,max_length=256)
 class UpdateOperatorEmail(BaseModel):
     email:EmailStr
-class ResetOperatorPassword(BaseModel):
+class SetPassword(BaseModel):
     password:str=Field(min_length=12,max_length=256)
 class OperatorStatus(BaseModel):
     active:bool
@@ -396,7 +398,7 @@ def login(body:Login,response:Response,request:Request):
         user=fetchone(c,"""SELECT * FROM app_users
             WHERE LOWER(email)=:identity OR (email IS NULL AND username=:identity)""",
             {'identity':identity})
-    if not user or not user['active'] or not verify_password(body.password,user['password_hash']):
+    if not user or not user['active'] or user['password_setup_required'] or not verify_password(body.password,user['password_hash']):
         with _LOGIN_LOCK:_LOGIN_ATTEMPTS.setdefault(ip,[]).append(current)
         raise HTTPException(401,'Credenziali non valide')
     with _LOGIN_LOCK:_LOGIN_ATTEMPTS.pop(ip,None)
@@ -418,27 +420,121 @@ def logout(request:Request,response:Response):
     response.delete_cookie('cri_admin',secure=SECURE,samesite='strict')
     return {'ok':True}
 
+# First-login activation and admin password reset use the same one-time email flow.
+def setup_link_for_user(user_id:int)->tuple[str,str,str]:
+    if not os.getenv('SMTP_HOST','').strip() or not os.getenv('SMTP_FROM','').strip():
+        raise HTTPException(503,'SMTP non configurato: impossibile inviare il link di attivazione')
+    token=secrets.token_urlsafe(36)
+    expires=(now()+timedelta(hours=48)).isoformat(timespec='seconds')
+    with db() as c:
+        user=fetchone(c,'SELECT id,email,display_name,active FROM app_users WHERE id=:id',{'id':user_id})
+        if not user:raise HTTPException(404,'Utente non trovato')
+        if not user['active']:raise HTTPException(409,'Attiva prima questo operatore')
+        if not user['email']:raise HTTPException(422,'Assegna prima un indirizzo email')
+        c.execute(text("""UPDATE app_users SET setup_token_hash=:hash,
+            setup_expires_at=:expires,password_setup_required=TRUE,
+            password_hash=:disabled,auth_version=:version WHERE id=:id"""),
+            {'hash':digest(token),'expires':expires,'disabled':'!','version':secrets.token_hex(16),'id':user_id})
+        audit(c,None,'password_setup_issued_'+str(user_id))
+    return user['email'],user['display_name'],f'{PUBLIC_BASE_URL}/activate/{token}'
+
+def send_password_setup(email:str,name:str,link:str)->str:
+    host=os.getenv('SMTP_HOST','').strip()
+    sender=os.getenv('SMTP_FROM','').strip()
+    smtp_user=os.getenv('SMTP_USER','').strip()
+    password=os.getenv('SMTP_PASSWORD','')
+    msg=EmailMessage()
+    msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
+    msg['To']=email
+    msg['Subject']='CRI Venezia - Configurazione password account operatore'
+    msg.set_content('Gentile '+name+',\n\n'
+        'per attivare il tuo account CRI Venezia imposta una password personale '
+        'utilizzando questo collegamento:\n\n'+link+'\n\n'
+        'Il link scade dopo 48 ore ed è utilizzabile una sola volta. '
+        'Se non hai richiesto un account contatta l’amministratore CRI Venezia.\n\n'
+        'Non inoltrare questo link ad altre persone.')
+    try:
+        port=int(os.getenv('SMTP_PORT','587'))
+        if os.getenv('SMTP_SSL','false').lower()=='true':
+            with smtplib.SMTP_SSL(host,port,timeout=20,context=ssl.create_default_context()) as smtp:
+                if smtp_user:smtp.login(smtp_user,password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host,port,timeout=20) as smtp:
+                smtp.starttls(context=ssl.create_default_context())
+                if smtp_user:smtp.login(smtp_user,password)
+                smtp.send_message(msg)
+        return 'sent'
+    except (Exception) as exc:
+        logger.warning('Account activation delivery failed, type=%s',type(exc).__name__)
+        return 'failed'
+
+def get_setup_record(token:str):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{35,128}',token):
+        raise HTTPException(410,'Link non valido o scaduto')
+    with db() as c:
+        row=fetchone(c,"""SELECT id,email,display_name FROM app_users
+          WHERE setup_token_hash=:digest AND setup_expires_at>:current
+            AND password_setup_required=TRUE AND active=TRUE""",
+          {'digest':digest(token),'current':iso()})
+    if not row:raise HTTPException(410,'Link già utilizzato, scaduto o revocato')
+    return row
+
+@app.get('/activate/{token}')
+def activation_page(token:str):
+    try:
+        get_setup_record(token)
+    except HTTPException:
+        return HTMLResponse('<!doctype html><html lang="it"><meta charset="utf-8">'
+           '<title>Link non valido</title><main><h1>Link scaduto o revocato</h1>'
+           '<p>Contatta l’amministratore CRI Venezia per riceverne uno nuovo.</p></main></html>',
+            status_code=410,headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
+    return FileResponse(BASE/'static'/'activate.html',
+         headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
+
+@app.post('/api/activate/{token}')
+def activate_user(token:str,body:SetPassword):
+    user=get_setup_record(token)
+    with db() as c:
+        result=c.execute(text("""UPDATE app_users SET password_hash=:password,
+            password_setup_required=FALSE,setup_token_hash=NULL,setup_expires_at=NULL,
+            auth_version=:version WHERE id=:id AND setup_token_hash=:hash
+            AND setup_expires_at>:current AND password_setup_required=TRUE AND active=TRUE"""),
+           {'password':password_hash(body.password),'version':secrets.token_hex(16),
+            'id':user['id'],'hash':digest(token),'current':iso()})
+        if result.rowcount!=1:raise HTTPException(410,'Link non più valido')
+        audit(c,None,'password_setup_completed_'+str(user['id']))
+    return {'ok':True}
+
 @app.get('/api/users')
 def get_users(request:Request):
     require_admin(request)
     with db() as c:
-        rows=c.execute(text('SELECT id,email,username,display_name,role,active,created_at FROM app_users ORDER BY id')).mappings().all()
+        rows=c.execute(text("""SELECT id,email,username,display_name,role,active,created_at,
+            password_setup_required,setup_expires_at FROM app_users ORDER BY id""")).mappings().all()
     return [dict(row) for row in rows]
 @app.post('/api/users')
 def create_user(body:NewOperator,request:Request):
     require_admin(request)
+    if not os.getenv('SMTP_HOST','').strip() or not os.getenv('SMTP_FROM','').strip():
+        raise HTTPException(503,'Configura SMTP prima di creare gli account')
     email=str(body.email).strip().lower()
     with db() as c:
         if fetchone(c,'SELECT id FROM app_users WHERE LOWER(email)=:email',{'email':email}):
             raise HTTPException(409,'Email già assegnata a un account')
         username='account-'+secrets.token_hex(12)
         uid=c.execute(text("""INSERT INTO app_users
-            (username,email,display_name,password_hash,role,active,auth_version,created_at)
-            VALUES(:username,:email,:display_name,:pw,'operator',TRUE,:version,:at) RETURNING id"""),
+            (username,email,display_name,password_hash,role,active,
+            auth_version,created_at,password_setup_required)
+            VALUES(:username,:email,:display_name,:pw,'operator',TRUE,:version,:at,TRUE)
+            RETURNING id"""),
             {'username':username,'email':email,'display_name':body.display_name.strip(),
-             'pw':password_hash(body.password),'version':secrets.token_hex(16),'at':iso()}).scalar_one()
+             'pw':'!','version':secrets.token_hex(16),'at':iso()}).scalar_one()
         audit(c,None,'user_created_'+str(uid))
-    return {'ok':True,'id':uid,'email':email}
+    to,name,link=setup_link_for_user(uid)
+    outcome=send_password_setup(to,name,link)
+    return {'ok':True,'id':uid,'email':email,'activation_status':outcome}
+
 @app.put('/api/users/{id}/email')
 def set_user_email(id:int,body:UpdateOperatorEmail,request:Request):
     require_admin(request)
@@ -448,20 +544,19 @@ def set_user_email(id:int,body:UpdateOperatorEmail,request:Request):
         if not user:raise HTTPException(404,'Utente non trovato')
         existing=fetchone(c,'SELECT id FROM app_users WHERE LOWER(email)=:email',{'email':email})
         if existing and existing['id']!=id:raise HTTPException(409,'Email già assegnata a un account')
-        c.execute(text('UPDATE app_users SET email=:email,auth_version=:version WHERE id=:id'),
+        c.execute(text("""UPDATE app_users SET email=:email,auth_version=:version,
+           setup_token_hash=NULL,setup_expires_at=NULL WHERE id=:id"""),
             {'email':email,'version':secrets.token_hex(16),'id':id})
         audit(c,None,'user_email_updated_'+str(id))
     return {'ok':True,'sessions_revoked':True}
-@app.put('/api/users/{id}/password')
-def reset_user_password(id:int,body:ResetOperatorPassword,request:Request):
+
+@app.post('/api/users/{id}/send-setup')
+def resend_password_setup(id:int,request:Request):
     require_admin(request)
-    with db() as c:
-        user=fetchone(c,'SELECT id FROM app_users WHERE id=:id',{'id':id})
-        if not user:raise HTTPException(404,'Utente non trovato')
-        c.execute(text('UPDATE app_users SET password_hash=:pw,auth_version=:version WHERE id=:id'),
-           {'pw':password_hash(body.password),'version':secrets.token_hex(16),'id':id})
-        audit(c,None,'password_reset_'+str(id))
-    return {'ok':True,'sessions_revoked':True}
+    to,name,link=setup_link_for_user(id)
+    outcome=send_password_setup(to,name,link)
+    return {'ok':True,'activation_status':outcome,'sessions_revoked':True}
+
 @app.put('/api/users/{id}/status')
 def set_user_status(id:int,body:OperatorStatus,request:Request):
     admin=require_admin(request)
