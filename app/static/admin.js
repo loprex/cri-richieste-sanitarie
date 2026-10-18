@@ -10,6 +10,7 @@ function msg(s,bad=false){$('notice').className='notice '+(bad?'err':'good');$('
 async function api(path,method='GET',body){let r=await fetch('/api'+path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json','x-cri-csrf':csrf},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok){let e;try{e=(await r.json()).detail}catch{e=r.statusText}throw new Error(typeof e==='string'?e:JSON.stringify(e))}return r.json()}
 async function init(){try{const session=await api('/session');csrf=session.csrf;onLogin(session)}catch{}}
 function showSection(name){
+ if(name==='users'&&!currentUser.can_delete_accounts)return;
  if(name!=='requests'&&!currentUser.is_admin)return;
  for(const [section,view,nav] of [['requests','requestsView','navRequests'],['settings','settingsPanel','navSettings'],['users','usersPanel','navUsers']]){
   $(view).classList.toggle('hidden',name!==section);
@@ -28,6 +29,7 @@ function onLogin(session){
  $('login').classList.add('hidden');$('dashboard').classList.remove('hidden');
  $('whoAmI').textContent=(session.display_name||session.email||session.legacy_login)+(session.is_admin?' · Amministratore':' · Operatore');
  document.querySelectorAll('.adminOnly').forEach(x=>x.classList.toggle('hidden',!session.is_admin));
+ $('navUsers').classList.toggle('hidden',!currentUser.can_delete_accounts);
  showSection('requests');refresh();
  const requestedId=new URLSearchParams(location.search).get('request');
  if(requestedId&&/^[1-9][0-9]{0,8}$/.test(requestedId))openDetail(Number(requestedId));
@@ -134,7 +136,7 @@ $('testMailButton').onclick=async()=>{
 };
 
 async function loadUsers(){
- if(!currentUser.is_admin)return;
+ if(!currentUser.can_delete_accounts)return;
  try{
   const users=await api('/users');
   $('usersList').innerHTML=users.map(u=>{
