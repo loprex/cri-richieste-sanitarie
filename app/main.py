@@ -147,6 +147,14 @@ with db() as c:
             ON CONFLICT(username) DO NOTHING"""),
             {'pw':password_hash(PASSWORD),'version':secrets.token_hex(16),'at':iso()})
 
+# Apply optional bootstrap email also when the admin row was created just now.
+with db() as c:
+    if bootstrap_email and re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',bootstrap_email):
+        c.execute(text("""UPDATE app_users SET email=:email
+          WHERE username='admin' AND email IS NULL AND
+          NOT EXISTS(SELECT 1 FROM app_users WHERE email=:email)"""),
+          {'email':bootstrap_email})
+
 def audit(c,id,action):c.execute(text('INSERT INTO audit(request_id,action,created_at) VALUES(:id,:action,:at)'),{'id':id,'action':action,'at':iso()})
 def sign(v):return hmac.new(SESSION_SECRET.encode(),v.encode(),hashlib.sha256).hexdigest()
 def require_user(req:Request):
