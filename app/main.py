@@ -320,6 +320,30 @@ def create(request:Request,body:Create):
 @app.get('/r/{token}')
 def external(token:str):
     get_token_record(token);return FileResponse(BASE/'static'/'form.html')
+# Reuse event-only information from completed requests sent to the same email.
+# An invitation token grants access solely to that mailbox's historical EVENT fields.
+REUSABLE_EVENT_FIELDS=('event_name','event_place','event_description','reference_name',
+ 'reference_phone','event_type','recurrence','location_type','road_closure',
+ 'participants_athletes','participants_public','children','elderly','disabled',
+ 'risk_options','additional_notes')
+@app.get('/api/r/{token}/previous-events')
+def previous_events(token:str):
+    current=get_token_record(token)
+    if current['status'] not in ('pending','draft'):
+        raise HTTPException(409,'Richiesta già conclusa')
+    with db() as c:
+        previous=c.execute(text("""SELECT id,payload FROM requests
+            WHERE LOWER(customer_email)=:email AND id<>:id
+            AND status IN ('submitted','approved') ORDER BY id DESC LIMIT 30"""),
+            {'email':current['customer_email'].lower(),'id':current['id']}).mappings().all()
+    results=[]
+    for item in previous:
+        data=json.loads(item['payload'])
+        if not data.get('event_name'):continue
+        results.append({'id':item['id'],'name':data['event_name'],
+                        'data':{k:data[k] for k in REUSABLE_EVENT_FIELDS if k in data}})
+    return results
+
 @app.get('/api/r/{token}')
 def token_info(token:str):
     r=get_token_record(token)
