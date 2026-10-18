@@ -978,7 +978,7 @@ def export_data(id:int,request:Request):
 @app.get('/api/settings/mail')
 def get_mail_settings(request:Request):
     require_admin(request)
-    with db() as c:return {'enabled':get_setting(c,'mail_enabled','false')=='true','recipients':get_setting(c,'mail_recipients'),'subject':get_setting(c,'mail_subject','Piano Sanitario CRI - protocollo {protocol} - {event}'),'body':get_setting(c,'mail_body','È stata ricevuta la richiesta #{id} per {event}. Il piano allegato è una BOZZA da verificare e approvare dalla CRI.'),'smtp_ready':bool(os.getenv('SMTP_HOST') and os.getenv('SMTP_FROM'))}
+    with db() as c:return {'enabled':get_setting(c,'mail_enabled','false')=='true','recipients':get_setting(c,'mail_recipients'),'subject':get_setting(c,'mail_subject','Piano Sanitario CRI - protocollo {protocol} - {event}'),'body':get_setting(c,'mail_body','È stata ricevuta la richiesta #{id} per {event}. Il piano allegato è una BOZZA da verificare e approvare dalla CRI.'),'smtp_ready':bool(os.getenv('SMTP_HOST') and os.getenv('SMTP_FROM')),'administration_mail_paused':not administration_mail_active()}
 @app.put('/api/settings/mail')
 def update_mail_settings(body:MailSettings,request:Request):
     require_admin(request)
