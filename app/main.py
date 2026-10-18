@@ -220,8 +220,8 @@ def require_user(req:Request):
           req.headers.get('x-cri-csrf',''),sign('csrf:'+value)):
         raise HTTPException(403,'Protezione CSRF')
     with db() as c:
-        user=fetchone(c,'SELECT id,username,email,display_name,role,active,auth_version FROM app_users WHERE id=:id',{'id':user_id})
-    if not user or not user['active'] or not hmac.compare_digest(user['auth_version'],auth_version):
+        user=fetchone(c,'SELECT id,username,email,display_name,role,active,auto_locked_at,auth_version FROM app_users WHERE id=:id',{'id':user_id})
+    if not user or not user['active'] or user['auto_locked_at'] or not hmac.compare_digest(user['auth_version'],auth_version):
         raise HTTPException(401,'Sessione revocata')
     return dict(user,csrf=sign('csrf:'+value))
 def require_admin(req:Request):
@@ -583,7 +583,7 @@ def setup_link_for_user(user_id:int)->tuple[str,str,str]:
         audit(c,None,'password_setup_issued_'+str(user_id))
     return user['email'],user['display_name'],f'{PUBLIC_BASE_URL}/activate/{token}'
 
-def send_password_setup(email:str,name:str,link:str)->str:
+def send_password_setup(email:str,name:str,link:str,forgot:bool=False)->str:
     if not may_send_to_email(email):return 'suppressed_until_production'
     host=os.getenv('SMTP_HOST','').strip()
     sender=os.getenv('SMTP_FROM','').strip()
@@ -592,9 +592,11 @@ def send_password_setup(email:str,name:str,link:str)->str:
     msg=EmailMessage()
     msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
     msg['To']=email
-    msg['Subject']='CRI Venezia - Configurazione password account operatore'
+    msg['Subject']=('CRI Venezia - Recupero password' if forgot
+                     else 'CRI Venezia - Configurazione password account operatore')
     msg.set_content('Gentile '+name+',\n\n'
-        'per attivare il tuo account CRI Venezia imposta una password personale '
+        +('per recuperare l’accesso imposta una nuova password personale ' if forgot
+          else 'per attivare il tuo account CRI Venezia imposta una password personale ')
         'utilizzando questo collegamento:\n\n'+link+'\n\n'
         'Il link scade dopo 48 ore ed è utilizzabile una sola volta. '
         'Se non hai richiesto un account contatta l’amministratore CRI Venezia.\n\n'
@@ -625,6 +627,80 @@ def get_setup_record(token:str):
           {'digest':digest(token),'current':iso()})
     if not row:raise HTTPException(410,'Link già utilizzato, scaduto o revocato')
     return row
+
+def get_password_reset_record(token:str):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{35,128}',token):
+        raise HTTPException(410,'Link non valido o scaduto')
+    with db() as c:
+        row=fetchone(c,"""SELECT id,email,display_name FROM app_users
+          WHERE reset_token_hash=:digest AND reset_expires_at>:current
+          AND active=TRUE AND password_setup_required=FALSE""",
+          {'digest':digest(token),'current':iso()})
+    if not row:raise HTTPException(410,'Link già utilizzato, scaduto o revocato')
+    return row
+
+@app.post('/api/password/forgot')
+def forgot_password(body:ForgotPassword,request:Request):
+    """Always return the same result for known and unknown addresses."""
+    address=str(body.email).strip().lower()
+    ip=request.client.host if request.client else 'unknown'
+    key_ip=digest(ip)
+    moment=time.monotonic()
+    response={'ok':True,'message':'Se l’indirizzo è registrato e può ricevere email, riceverai un link per reimpostare la password.'}
+    with _RESET_LOCK:
+        if len(_RESET_REQUESTS)>1200:_RESET_REQUESTS.clear()
+        attempts=[t for t in _RESET_REQUESTS.get(key_ip,[]) if moment-t<900]
+        if len(attempts)>=5:
+            return response
+        _RESET_REQUESTS[key_ip]=attempts+[moment]
+    if not may_send_to_email(address) or not os.getenv('SMTP_HOST','').strip() or not os.getenv('SMTP_FROM','').strip():
+        return response
+    token=secrets.token_urlsafe(36)
+    token_hash=digest(token)
+    with db() as c:
+        user=fetchone(c,"""UPDATE app_users SET
+            reset_token_hash=:hash,reset_expires_at=:expires,reset_requested_at=:sent
+          WHERE LOWER(email)=:email AND active=TRUE AND password_setup_required=FALSE
+            AND (reset_requested_at IS NULL OR reset_requested_at<:threshold)
+          RETURNING email,display_name,id""",
+          {'hash':token_hash,
+           'expires':(now()+timedelta(hours=48)).isoformat(timespec='seconds'),
+           'sent':iso(),
+           'threshold':(now()-timedelta(minutes=10)).isoformat(timespec='seconds'),
+           'email':address})
+        if user:audit(c,None,'password_recovery_requested_'+str(user['id']))
+    if user:
+        link=f'{PUBLIC_BASE_URL}/reset/{token}'
+        outcome=send_password_setup(user['email'],user['display_name'],link,forgot=True)
+        if outcome!='sent':
+            with db() as c:
+                c.execute(text("""UPDATE app_users SET reset_token_hash=NULL,
+                  reset_expires_at=NULL WHERE id=:id AND reset_token_hash=:hash"""),
+                  {'id':user['id'],'hash':token_hash})
+                audit(c,None,'password_recovery_email_failed_'+str(user['id']))
+    return response
+
+@app.get('/reset/{token}')
+def password_reset_page(token:str):
+    get_password_reset_record(token)
+    return FileResponse(BASE/'static'/'activate.html',
+         headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
+
+@app.post('/api/password/reset/{token}')
+def complete_password_reset(token:str,body:SetPassword):
+    user=get_password_reset_record(token)
+    with db() as c:
+        result=c.execute(text("""UPDATE app_users SET
+            password_hash=:password,failed_login_attempts=0,auto_locked_at=NULL,
+            reset_token_hash=NULL,reset_expires_at=NULL,reset_requested_at=NULL,
+            auth_version=:version
+          WHERE id=:id AND reset_token_hash=:hash AND reset_expires_at>:current
+            AND active=TRUE AND password_setup_required=FALSE"""),
+          {'password':password_hash(body.password),'version':secrets.token_hex(16),
+           'id':user['id'],'hash':digest(token),'current':iso()})
+        if result.rowcount!=1:raise HTTPException(410,'Link scaduto o già utilizzato')
+        audit(c,None,'password_recovery_completed_'+str(user['id']))
+    return {'ok':True}
 
 @app.get('/activate/{token}')
 def activation_page(token:str):
