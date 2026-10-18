@@ -669,29 +669,33 @@ def external(token:str,request:Request):
         return RedirectResponse(url='/r/'+token+'#invio-non-registrato',
             status_code=303,headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
     return FileResponse(BASE/'static'/'form.html',headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
-# Reuse event-only information from completed requests sent to the same email.
-# An invitation token grants access solely to that mailbox's historical EVENT fields.
-REUSABLE_EVENT_FIELDS=('event_name','event_place','event_description','reference_name',
- 'reference_phone','event_type','recurrence','location_type','road_closure',
- 'participants_athletes','participants_public','children','elderly','disabled',
- 'risk_options','additional_notes')
+# Previous completed events may be reused only when both organizer email
+# and CRI creator account match. Never expose other operators' requests.
+# Only event-level fields are returned: no dates, fiscal or billing identities.
+REUSABLE_EVENT_FIELDS=('event_name','event_city','event_place','event_description',
+ 'reference_name','reference_phone','event_type','recurrence','location_type',
+ 'road_closure','participants_athletes','participants_public','children','elderly',
+ 'disabled','risk_options','additional_notes')
 @app.get('/api/r/{token}/previous-events')
-def previous_events(token:str):
+def previous_events(token:str,response:Response):
+    response.headers['Cache-Control']='no-store'
+    response.headers['Referrer-Policy']='no-referrer'
     current=get_token_record(token)
-    if current['status'] not in ('pending','draft'):
-        raise HTTPException(409,'Richiesta già conclusa')
     with db() as c:
-        previous=c.execute(text("""SELECT id,payload FROM requests
-            WHERE LOWER(customer_email)=:email AND id<>:id
-            AND archived_at IS NOT NULL AND status IN ('submitted','approved')
+        previous=c.execute(text("""SELECT id,payload,submitted_at FROM requests
+            WHERE LOWER(TRIM(customer_email))=:email AND id<>:id
+            AND status IN ('submitted','approved')
             AND (owner_user_id=:owner OR (:owner IS NULL AND owner_user_id IS NULL))
             ORDER BY id DESC LIMIT 30"""),
-            {'email':current['customer_email'].lower(),'id':current['id'],'owner':current.get('owner_user_id')}).mappings().all()
+            {'email':current['customer_email'].strip().lower(),
+             'id':current['id'],'owner':current.get('owner_user_id')}).mappings().all()
     results=[]
     for item in previous:
-        data=json.loads(item['payload'])
-        if not data.get('event_name'):continue
+        try:data=json.loads(item['payload'])
+        except (TypeError,ValueError):continue
+        if not isinstance(data,dict) or not data.get('event_name'):continue
         results.append({'id':item['id'],'name':data['event_name'],
+                        'submitted_at':item['submitted_at'],
                         'data':{k:data[k] for k in REUSABLE_EVENT_FIELDS if k in data}})
     return results
 
