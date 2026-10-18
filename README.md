@@ -29,6 +29,17 @@ Applicazione **indipendente da LOPREXAPP**. Accesso multiutente, link casuale pe
 - Il reset password e la modifica email invalidano le sessioni aperte.
 - Prima del deploy in staging eseguire il backup del database, controllare i test automatici, verificare che tutti i destinatari email siano appropriati e usare solo dati di prova.
 
+## Email: quando arriva una notifica e come provarla
+- Alla **creazione del link**, il messaggio con il link di compilazione viene inviato all'**organizzatore** tramite SMTP (l'esito di accettazione dal server viene mostrato subito).
+- Alla **compilazione definitiva**, se **Impostazioni email → Abilita invio automatico** è selezionato, un messaggio con **protocollo, data, collegamento al dettaglio riservato e file Excel precompilato allegato** viene inviato agli indirizzi CRI configurati, agli amministratori attivi e già attivati, e all'operatore creatore se dotato di email valida. Non inviare i documenti all'organizzatore automaticamente.
+- Il link nella notifica ha il formato `/?request=ID`: la richiesta viene aperta dopo il login se e solo se l'operatore ha i permessi necessari. **Non usare il token pubblico** nei messaggi interni.
+- L'Excel porta nel nome **data e protocollo interno**; il documento è una **BOZZA DA VERIFICARE**. La registrazione della richiesta viene salvata anche se la notifica fallisce.
+- Il blocco di invio ora mostra e memorizza motivazioni sintetiche: `disabled`, `no_recipients`, `smtp_not_configured`, `smtp_send_failed`, `excel_generation_failed`. Sono visibili nell'elenco e nel dettaglio.
+- In Impostazioni email esiste una **prova SMTP** senza allegati. La mail di prova può essere inviata soltanto a un indirizzo CRI amministrativo o già incluso nei destinatari configurati; fino a 5 prove per amministratore ogni 15 minuti. Un esito positivo significa accettazione dal server SMTP, **non** consegna certa; controllare anche la posta indesiderata.
+- Le richieste compilate prima dell'attivazione delle notifiche si possono reinviare dal rispettivo dettaglio con **Invia / reinvia email**.
+- `amministrazione@crivenezia.it` ha ruolo amministratore. Se l'account non esiste al deploy, viene creato **in attesa di attivazione**, senza password iniziale; da **Utenti e password** l'admin invia il link personale per impostare la password. Fino all'attivazione non ha accesso e non viene incluso nei destinatari automatici.
+- Per problemi di recapito controllare le variabili protette `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_FROM`, `SMTP_PASSWORD`, `SMTP_SSL` e i log di Coolify. Non inviare mai credenziali SMTP nei ticket.
+
 ## Deploy Coolify
 - Repository GitHub dedicato / servizio nuovo, senza collegamento a Portal/SSO/LOPREXAPP.
 - Crea database **PostgreSQL dedicato**, utente e password dedicati e impostane `DATABASE_URL` (vedi `.env.example`).
