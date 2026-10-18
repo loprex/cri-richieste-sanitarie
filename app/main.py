@@ -796,6 +796,7 @@ def previous_events(token:str,response:Response):
 # The user's token is validated locally and never sent to the geocoding provider.
 _ADDRESS_RATE_LOCK=threading.Lock()
 _ADDRESS_LOOKUPS={}
+_ADDRESS_CACHE={}
 @app.get('/api/r/{token}/address-suggestions')
 def address_suggestions(token:str, q:str=Query(min_length=3,max_length=110)):
     get_token_record(token)
@@ -803,10 +804,16 @@ def address_suggestions(token:str, q:str=Query(min_length=3,max_length=110)):
     if len(query)<3:return {'suggestions':[]}
     current=time.monotonic()
     key=digest(token)
+    query_key=digest(query.casefold())
     with _ADDRESS_RATE_LOCK:
-        # Bound storage even if many separate links are used.
-        if len(_ADDRESS_LOOKUPS)>800:
-            _ADDRESS_LOOKUPS.clear()
+        # In-memory cache reduces repeat requests to the best-effort public
+        # demo service. Do not persist raw address searches or bearer tokens.
+        if len(_ADDRESS_CACHE)>400:
+            _ADDRESS_CACHE.clear()
+        cached=_ADDRESS_CACHE.get(query_key)
+        if cached and current-cached[0]<180:
+            return {'suggestions':cached[1],'available':True}
+        if len(_ADDRESS_LOOKUPS)>800:_ADDRESS_LOOKUPS.clear()
         times=[v for v in _ADDRESS_LOOKUPS.get(key,[]) if current-v<60]
         if len(times)>=30:
             raise HTTPException(429,'Troppe ricerche indirizzo: attendi un minuto')
@@ -817,16 +824,26 @@ def address_suggestions(token:str, q:str=Query(min_length=3,max_length=110)):
     req=UpstreamRequest(url,headers={'Accept':'application/json',
         'User-Agent':'CRI-Venezia-Address-Form/1.0'})
     try:
-        with urlopen(req,timeout=4) as remote:
+        with urlopen(req,timeout=8) as remote:
             if remote.status!=200:
-                return {'suggestions':[],'available':False}
+                logger.warning('Geocoding upstream HTTP status=%s',remote.status)
+                return {'suggestions':[],'available':False,'reason':'provider_http'}
             response=json.loads(remote.read(150000))
-    except (URLError,HTTPError,OSError,ValueError,TimeoutError):
-        logger.warning('Geocoding provider temporarily unavailable')
-        return {'suggestions':[],'available':False}
+    except HTTPError as exc:
+        logger.warning('Geocoding upstream HTTP status=%s',exc.code)
+        return {'suggestions':[],'available':False,
+                'reason':'rate_limited' if exc.code==429 else 'provider_http'}
+    except (URLError,OSError,TimeoutError) as exc:
+        logger.warning('Geocoding upstream connection failure type=%s',type(exc).__name__)
+        reason='timeout' if 'timed out' in str(exc).lower() or isinstance(exc,TimeoutError) else 'connection'
+        return {'suggestions':[],'available':False,'reason':reason}
+    except (ValueError,UnicodeDecodeError,TypeError) as exc:
+        logger.warning('Geocoding upstream malformed response type=%s',type(exc).__name__)
+        return {'suggestions':[],'available':False,'reason':'invalid_response'}
     addresses=[]
     seen=set()
     for feature in (response.get('features') or [])[:12]:
+        if not isinstance(feature,dict):continue
         p=feature.get('properties') or {}
         if (p.get('countrycode') or '').lower() not in ('it',''):
             continue
@@ -846,6 +863,8 @@ def address_suggestions(token:str, q:str=Query(min_length=3,max_length=110)):
         seen.add(address.casefold())
         addresses.append(address)
         if len(addresses)>=6:break
+    with _ADDRESS_RATE_LOCK:
+        _ADDRESS_CACHE[query_key]=(current,addresses)
     return {'suggestions':addresses,'available':True}
 
 @app.get('/api/r/{token}')
