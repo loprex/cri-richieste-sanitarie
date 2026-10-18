@@ -215,11 +215,11 @@ def send_invitation(request_id:int, recipient:str, url:str, days:int)->str:
     msg['To']=recipient
     msg['Subject']='Croce Rossa Italiana – Compilazione richiesta assistenza sanitaria'
     msg.set_content(
-        'Gentile organizzatore,\\n\\n'
-        'Per compilare la richiesta di assistenza sanitaria, aprire il collegamento personale:\\n'
-        +url+'\\n\\n'
-        +f'Il collegamento scade tra {days} giorni. Non inoltrarlo ad altre persone.\\n'
-        'Il Piano Sanitario sarà predisposto dalla CRI dopo la ricezione dei dati.\\n'
+        'Gentile organizzatore,\n\n'
+        'Per compilare la richiesta di assistenza sanitaria, aprire il collegamento personale:\n'
+        +url+'\n\n'
+        +f'Il collegamento scade tra {days} giorni. Non inoltrarlo ad altre persone.\n'
+        'Il Piano Sanitario sarà predisposto dalla CRI dopo la ricezione dei dati.\n'
         'Cordiali saluti.'
     )
     try:
