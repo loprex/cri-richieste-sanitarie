@@ -10,3 +10,16 @@
 .address-option:hover,.address-option.active{background:#f4e7e9;color:#a31028}
 .address-option:focus-visible{outline:2px solid #c8102e;outline-offset:-2px}
 .address-hint{margin-top:6px}
+
+/* Conditional reuse of previously completed events */
+.event-reuse-modes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:14px 0}
+.reuse-mode{display:flex;align-items:flex-start;gap:12px;border:1px solid #cbd3dd;border-radius:12px;padding:16px;cursor:pointer;background:#fff;margin:0;font-size:14px}
+.reuse-mode:has(input:checked){border-color:#b5162e;background:#fff6f7;box-shadow:0 0 0 1px #b5162e}
+.reuse-mode input{width:20px;height:20px;flex:0 0 20px;margin:1px 0 0;accent-color:#b5162e}
+.reuse-mode strong{display:block;font-size:15px;line-height:1.4}
+.reuse-mode small{display:block;color:#586473;font-weight:400;line-height:1.5;margin-top:4px}
+.event-reuse-details{padding:18px;border:1px solid #e4d1d4;border-radius:12px;background:#fffafb;margin:14px 0}
+.event-choice-list{display:flex;flex-direction:column;gap:3px}
+.event-choice-list .check{padding:8px 10px;border:1px solid #edf0f3;border-radius:8px;background:#fff}
+.reuse-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 18px}
+@media(max-width:660px){.event-reuse-modes,.reuse-fields{grid-template-columns:1fr}.event-reuse-details{padding:12px}}
