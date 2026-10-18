@@ -191,6 +191,23 @@ with db() as c:
           VALUES(NULL,:action,:at)"""),
           {'action':'superadmin_promoted_'+str(bootstrap['id']),'at':iso()})
 
+# Apply the named operator mapping only if the surname identifies one unique
+# existing account. If no account or several names match, leave identities
+# unchanged: the Super Admin can select the exact account in the user panel.
+with db() as c:
+    ceccarelli_matches=c.execute(text("""SELECT id,role,username,email FROM app_users
+      WHERE LOWER(display_name) LIKE :name"""),{'name':'%ceccarelli%'}).mappings().all()
+    if len(ceccarelli_matches)==1:
+        target=ceccarelli_matches[0]
+        if (target['username']!='admin' and
+            (target['email'] or '').strip().casefold()!=ADDITIONAL_ADMIN_EMAIL and
+            target['role']=='admin'):
+            c.execute(text("""UPDATE app_users SET role='operator',auth_version=:version
+              WHERE id=:id"""),{'id':target['id'],'version':secrets.token_hex(16)})
+            c.execute(text("""INSERT INTO audit(request_id,action,created_at)
+              VALUES(NULL,:action,:at)"""),
+              {'action':'ceccarelli_operator_role_'+str(target['id']),'at':iso()})
+
 # Reconcile the requested second CRI administrator on deployment. Existing
 # accounts must be active and have completed the personal email setup before
 # they can sign in; upgrading the role never bypasses activation.
@@ -285,6 +302,7 @@ class DeleteUserRequest(BaseModel):
 class NewOperator(BaseModel):
     email:EmailStr
     display_name:str=Field(min_length=2,max_length=120)
+    role:str=Field(default='operator',pattern=r'^(?:operator|admin)$')
 class UpdateOperatorEmail(BaseModel):
     email:EmailStr
 class SetPassword(BaseModel):
@@ -784,7 +802,7 @@ def create_user(body:NewOperator,request:Request):
         if fetchone(c,'SELECT id FROM app_users WHERE LOWER(email)=:email',{'email':email}):
             raise HTTPException(409,'Email già assegnata a un account')
         username='account-'+secrets.token_hex(12)
-        assigned_role='admin' if email==ADDITIONAL_ADMIN_EMAIL else 'operator'
+        assigned_role='admin' if email==ADDITIONAL_ADMIN_EMAIL else body.role
         uid=c.execute(text("""INSERT INTO app_users
             (username,email,display_name,password_hash,role,active,
             auth_version,created_at,password_setup_required)
