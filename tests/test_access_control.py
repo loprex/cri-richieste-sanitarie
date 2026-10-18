@@ -76,6 +76,7 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     assert luca.post(f"/api/requests/{req_id}/archive",headers=lh).status_code==404
     assert maria.get("/api/users").status_code==403
     assert maria.get("/api/r/"+token).json()["event_city"]=="Venezia"
+    assert maria.get("/api/r/"+token+"/previous-events").json()==[]
     assert maria.post("/r/"+token,data={"org_name":"Test"}).status_code==405
     assert maria.get("/r/"+token+"?org_name=Test",follow_redirects=False).status_code==303
 
@@ -128,8 +129,44 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     assert "organizzatore@example.com" not in rec
     assert filename in [p.get_filename() for p in email.iter_attachments()]
     assert maria.put("/api/r/"+token,json=data).status_code==410
+
+    # New-event vs copy-previous choice: only the same recipient email and
+    # same CRI creator may see completed past event fields (archived or not).
+    second=maria.post("/api/requests",headers=mh,json={
+        "customer_email":"ORGANIZZATORE@example.com","event_name":"Maratona dei Dogi",
+        "event_city":"Venezia","days":14})
+    assert second.status_code==200,second.text
+    second_token=second.json()["url"].split("/r/")[1]
+    histories=maria.get("/api/r/"+second_token+"/previous-events")
+    assert histories.status_code==200,histories.text
+    assert histories.headers["Cache-Control"]=="no-store"
+    old=histories.json()
+    assert len(old)==1
+    assert old[0]["id"]==req_id and old[0]["name"]=="Porte Aperte"
+    assert old[0]["data"]["event_place"]=="Via Roma 10, Venezia"
+    assert old[0]["data"]["participants_athletes"]==30
+    assert old[0]["data"]["event_city"]=="Venezia"
+    assert "event_dates" not in old[0]["data"]
+    assert "event_slots" not in old[0]["data"]
+    assert "org_email" not in old[0]["data"]
+    assert "org_vat" not in old[0]["data"]
+    assert "protocol_number" not in old[0]["data"]
+    other=maria.post("/api/requests",headers=mh,json={
+        "customer_email":"another@example.com","event_name":"Evento diverso",
+        "event_city":"Padova","days":14})
+    assert other.status_code==200
+    other_token=other.json()["url"].split("/r/")[1]
+    assert maria.get("/api/r/"+other_token+"/previous-events").json()==[]
+    other_owner=luca.post("/api/requests",headers=lh,json={
+        "customer_email":"organizzatore@example.com","event_name":"Evento riservato",
+        "event_city":"Venezia","days":14})
+    assert other_owner.status_code==200
+    other_owner_token=other_owner.json()["url"].split("/r/")[1]
+    assert luca.get("/api/r/"+other_owner_token+"/previous-events").json()==[]
+
     assert maria.post(f"/api/requests/{req_id}/archive",headers=mh).status_code==200
     assert maria.get("/r/"+token).status_code==410
+    assert len(maria.get("/api/r/"+second_token+"/previous-events").json())==1
     assert maria.post(f"/api/requests/{req_id}/archive?archived=false",headers=mh).status_code==200
     assert maria.get("/r/"+token).status_code==410
 
