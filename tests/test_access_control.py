@@ -43,7 +43,23 @@ def test_single_prior_event_selection_markup():
     assert "previous-event-card" in form_js
     assert "input.name='previousEventChoice'" in form_js
 
+def test_previous_event_year_filter_metadata():
+    # Date of event takes precedence over submission year; old records use
+    # their completion date when the event date was not stored.
+    assert backend.previous_event_years({
+      "event_slots":[{"date":"2027-05-01"},{"date":"2028-01-03"}]},
+      "2026-10-18T14:00:00+02:00")==([2028,2027],"event")
+    assert backend.previous_event_years({
+      "event_dates":"18/10/2025, 19/10/2025"},
+      "2026-10-18T14:00:00+02:00")==([2025],"event")
+    assert backend.previous_event_years({
+      "event_dates":"2029-03-15"},
+      "2026-10-18T14:00:00+02:00")==([2029],"event")
+    assert backend.previous_event_years({},
+      "2024-01-01T09:00:00+01:00")==([2024],"submission")
+
 def test_user_activation_and_case_lifecycle(monkeypatch):
+    monkeypatch.setattr(backend,"now_venice",lambda:"2026-10-18T19:00:00+02:00")
     sent=[]
     class FakeSMTP:
         def __init__(self,*args,**kwargs):pass
