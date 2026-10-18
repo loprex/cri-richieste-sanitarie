@@ -42,6 +42,8 @@ logger=logging.getLogger('cri')
 # Simple single-process rate limit for TEST; use network/WAF limiting in production.
 _LOGIN_ATTEMPTS={}
 _LOGIN_LOCK=threading.Lock()
+_RESET_REQUESTS={}
+_RESET_LOCK=threading.Lock()
 
 def now():return datetime.now(timezone.utc)
 def iso():return now().isoformat(timespec='seconds')
@@ -121,7 +123,12 @@ for table,additions in (
     ('app_users',{'email':'VARCHAR(254)',
                   'setup_token_hash':'VARCHAR(64)',
                   'setup_expires_at':'TEXT',
-                  'password_setup_required':'BOOLEAN NOT NULL DEFAULT FALSE'}),
+                  'password_setup_required':'BOOLEAN NOT NULL DEFAULT FALSE',
+                  'failed_login_attempts':'INTEGER NOT NULL DEFAULT 0',
+                  'auto_locked_at':'TEXT',
+                  'reset_token_hash':'VARCHAR(64)',
+                  'reset_expires_at':'TEXT',
+                  'reset_requested_at':'TEXT'}),
     ('requests',{'planned_event_name':'VARCHAR(250)',
                  'planned_event_city':'VARCHAR(160)',
                  'protocol_number':'VARCHAR(50)',
@@ -241,6 +248,8 @@ def get_token_record(token):
 class Login(BaseModel):
     email:str
     password:str
+class ForgotPassword(BaseModel):
+    email:EmailStr
 class NewOperator(BaseModel):
     email:EmailStr
     display_name:str=Field(min_length=2,max_length=120)
@@ -496,16 +505,51 @@ def login(body:Login,response:Response,request:Request):
         user=fetchone(c,"""SELECT * FROM app_users
             WHERE LOWER(email)=:identity OR (email IS NULL AND username=:identity)""",
             {'identity':identity})
-    if not user or not user['active'] or user['password_setup_required'] or not verify_password(body.password,user['password_hash']):
+    # A manual or automatic account lock also invalidates existing sessions.
+    if user and not user['active']:
+        raise HTTPException(423,'Account bloccato dall’amministratore. Contatta il responsabile CRI.')
+    if user and user['auto_locked_at']:
+        raise HTTPException(423,'Account bloccato dopo 3 password errate. Usa «Password dimenticata?» o contatta un amministratore.')
+    bad_password=(not user or user['password_setup_required']
+                  or not verify_password(body.password,user['password_hash']))
+    if bad_password:
         with _LOGIN_LOCK:_LOGIN_ATTEMPTS.setdefault(ip,[]).append(current)
+        if user and user['active'] and not user['password_setup_required']:
+            # Atomic database increment works across web workers and restarts.
+            # Three consecutive wrong passwords lock the account until recovery.
+            with db() as c:
+                result=fetchone(c,"""UPDATE app_users SET
+                    failed_login_attempts=failed_login_attempts+1,
+                    auto_locked_at=CASE WHEN failed_login_attempts+1>=3
+                        THEN :at ELSE auto_locked_at END,
+                    auth_version=CASE WHEN failed_login_attempts+1>=3
+                        THEN :version ELSE auth_version END
+                  WHERE id=:id AND active=TRUE AND auto_locked_at IS NULL
+                  RETURNING failed_login_attempts,auto_locked_at""",
+                  {'at':iso(),'version':secrets.token_hex(16),'id':user['id']})
+                if result and result['auto_locked_at']:
+                    audit(c,None,'login_auto_locked_'+str(user['id']))
+                    raise HTTPException(423,'Account bloccato dopo 3 password errate. Usa «Password dimenticata?» o contatta un amministratore.')
         raise HTTPException(401,'Credenziali non valide')
+    with db() as c:
+        # In case a parallel request locked the account while checking PBKDF2,
+        # only an active, unlocked account may receive a fresh session.
+        fresh=fetchone(c,"""UPDATE app_users SET failed_login_attempts=0
+          WHERE id=:id AND active=TRUE AND auto_locked_at IS NULL
+            AND password_setup_required=FALSE AND auth_version=:version
+          RETURNING id,email,username,display_name,role,auth_version""",
+          {'id':user['id'],'version':user['auth_version']})
+    if not fresh:
+        raise HTTPException(423,'Accesso non consentito: account bloccato o sessione revocata.')
     with _LOGIN_LOCK:_LOGIN_ATTEMPTS.pop(ip,None)
     expiry=str(int((now()+timedelta(hours=8)).timestamp()))
-    session_value=str(user['id'])+':'+user['auth_version']+':'+expiry
-    response.set_cookie('cri_admin',session_value+'.'+sign(session_value),httponly=True,secure=SECURE,samesite='strict',max_age=28800)
-    return {'ok':True,'csrf':sign('csrf:'+session_value),'email':user['email'],
-            'legacy_login':user['username'] if not user['email'] else None,
-            'user_id':user['id'],'display_name':user['display_name'],'is_admin':user['role']=='admin'}
+    session_value=str(fresh['id'])+':'+fresh['auth_version']+':'+expiry
+    response.set_cookie('cri_admin',session_value+'.'+sign(session_value),
+        httponly=True,secure=SECURE,samesite='strict',max_age=28800)
+    return {'ok':True,'csrf':sign('csrf:'+session_value),'email':fresh['email'],
+            'legacy_login':fresh['username'] if not fresh['email'] else None,
+            'user_id':fresh['id'],'display_name':fresh['display_name'],
+            'is_admin':fresh['role']=='admin'}
 @app.get('/api/session')
 def session(request:Request):
     user=require_user(request)
