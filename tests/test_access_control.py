@@ -60,6 +60,8 @@ def test_previous_event_year_filter_metadata():
 
 def test_login_three_failures_manual_lock_and_password_recovery(monkeypatch):
     """Test DB-persistent lock, single-use recovery and admin-only manual unlocking."""
+    # The production owner mailbox differs from synthetic test fixtures.
+    monkeypatch.setattr(backend,'OWNER_DELETE_EMAIL','admin@example.com')
     import uuid
     backend._LOGIN_ATTEMPTS.clear()
     backend._RESET_REQUESTS.clear()
@@ -148,6 +150,7 @@ def ah_user_id(admin):
 
 
 def test_user_activation_and_case_lifecycle(monkeypatch):
+    monkeypatch.setattr(backend,'OWNER_DELETE_EMAIL','admin@example.com')
     monkeypatch.setattr(backend,"now_venice",lambda:"2026-10-18T19:00:00+02:00")
     sent=[]
     class FakeSMTP:
@@ -190,8 +193,29 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     monkeypatch.setenv("CRI_ENABLE_ADMINISTRATION_EMAIL","false")
     second_admin_client,second_admin_headers=login(
         "amministrazione@crivenezia.it","Administration-password-2026!")
-    assert second_admin_client.get("/api/users").status_code==200
+    # Administrators retain sanitary-request and SMTP-setting privileges,
+    # but cannot enumerate or change users; only the Lopresti bootstrap owner may.
+    secondary_session=second_admin_client.get("/api/session").json()
+    assert secondary_session["is_admin"] is True
+    assert secondary_session["can_delete_accounts"] is False
+    assert second_admin_client.get("/api/users").status_code==403
     assert second_admin_client.get("/api/settings/mail").status_code==200
+    assert second_admin_client.post("/api/users",headers=second_admin_headers,
+        json={"email":"forbidden@example.com","display_name":"Non consentito"}).status_code==403
+    assert second_admin_client.put(f"/api/users/{second_admin['id']}/email",
+        headers=second_admin_headers,json={"email":"forbidden@example.com"}).status_code==403
+    assert second_admin_client.put(f"/api/users/{second_admin['id']}/status",
+        headers=second_admin_headers,json={"active":False}).status_code==403
+    assert second_admin_client.post(f"/api/users/{second_admin['id']}/unlock",
+        headers=second_admin_headers,json={}).status_code==403
+    assert second_admin_client.post(f"/api/users/{second_admin['id']}/send-setup",
+        headers=second_admin_headers,json={}).status_code==403
+    assert second_admin_client.request("DELETE",f"/api/users/{second_admin['id']}",
+        headers=second_admin_headers,json={
+           "password":"Administration-password-2026!",
+           "confirm_email":"amministrazione@crivenezia.it",
+           "confirmation":"ELIMINA"}).status_code==403
+    assert admin.get("/api/session").json()["can_delete_accounts"] is True
     for email,name in (("maria@example.com","Maria"),("luca@example.com","Luca")):
         created=admin.post("/api/users",headers=ah,json={"email":email,"display_name":name})
         assert created.status_code==200,created.text
