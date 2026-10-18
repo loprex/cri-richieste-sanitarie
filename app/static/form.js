@@ -107,4 +107,4 @@ const result=await r.json();
 if(result.status!=='submitted')throw Error('Il server non ha confermato l’invio: contatta CRI Venezia.');
 form.classList.add('hidden');
 message(result.mail_status==='failed'?'Richiesta registrata correttamente. La notifica email al Comitato non è riuscita: contatta CRI Venezia al numero 041 982333.':'Richiesta inviata correttamente e registrata dalla CRI. Non devi compilarla nuovamente. Conserva questa conferma.');}catch(err){message('Invio non completato: '+err.message+'. I dati rimangono nel modulo: non ricaricare la pagina.',true)}
-finally{if(submit){submit.disabled=false;submit.textContent='Invia definitivamente la richiesta'}}};init();
+finally{if(submit){submit.disabled=false;submit.textContent='Invia definitivamente la richiesta'}}};const readySubmit=document.getElementById('sendRequest');readySubmit.disabled=false;readySubmit.textContent='Invia definitivamente la richiesta';init();
