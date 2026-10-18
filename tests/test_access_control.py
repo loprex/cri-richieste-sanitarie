@@ -149,6 +149,73 @@ def ah_user_id(admin):
     return admin.get("/api/session").json()["user_id"]
 
 
+def test_account_deletion_is_owner_only_and_preserves_history(monkeypatch):
+    import uuid
+    monkeypatch.setattr(backend,'OWNER_DELETE_EMAIL','admin@example.com')
+    admin,headers=login("admin@example.com",os.environ["ADMIN_PASSWORD"])
+    user_email="deleted-"+uuid.uuid4().hex[:12]+"@example.com"
+    token_pending="pending"+uuid.uuid4().hex+"abcdefghijklmnopqrstuvwxyz"
+    token_completed="complete"+uuid.uuid4().hex+"abcdefghijklmnopqrstuvwxyz"
+    with backend.db() as c:
+        victim_id=c.execute(backend.text("""INSERT INTO app_users
+          (username,email,display_name,password_hash,role,active,
+           auth_version,created_at,password_setup_required)
+          VALUES(:name,:email,'Account da eliminare','!', 'operator',
+            TRUE,:version,:at,TRUE) RETURNING id"""),
+          {'name':'test-'+uuid.uuid4().hex[:12],
+           'email':user_email,'version':uuid.uuid4().hex,'at':backend.iso()}).scalar_one()
+        created=backend.iso()
+        expires=(backend.now()+backend.timedelta(days=10)).isoformat()
+        pending_id=c.execute(backend.text("""INSERT INTO requests
+          (token_hash,customer_email,created_at,expires_at,status,payload,
+           owner_user_id,planned_event_name,planned_event_city)
+          VALUES(:hash,:email,:created,:expires,'pending','{}',
+          :owner,'Richiesta da revocare','Venezia') RETURNING id"""),
+          {'hash':backend.digest(token_pending),'email':'pending@example.com',
+           'created':created,'expires':expires,'owner':victim_id}).scalar_one()
+        completed_id=c.execute(backend.text("""INSERT INTO requests
+          (token_hash,customer_email,created_at,expires_at,status,payload,
+           owner_user_id,protocol_number,protocol_at)
+          VALUES(:hash,:email,:created,:expires,'submitted',
+          :payload,:owner,:protocol,:created) RETURNING id"""),
+          {'hash':backend.digest(token_completed),'email':'completed@example.com',
+           'created':created,'expires':expires,'owner':victim_id,
+           'payload':'{"event_name":"Evento storico conservato"}',
+           'protocol':'CRI-VE/2042/000001'}).scalar_one()
+    endpoint=f"/api/users/{victim_id}"
+    def remove(password,confirm_email=user_email,confirmation="ELIMINA"):
+        return admin.request("DELETE",endpoint,headers=headers,json={
+           "password":password,"confirm_email":confirm_email,
+           "confirmation":confirmation})
+    assert remove("Incorrect-password-2026").status_code==403
+    assert remove(os.environ["ADMIN_PASSWORD"],"wrong@example.com").status_code==422
+    assert remove(os.environ["ADMIN_PASSWORD"],confirmation="ANNULLA").status_code==422
+    owner_id=admin.get("/api/session").json()["user_id"]
+    assert admin.request("DELETE",f"/api/users/{owner_id}",headers=headers,json={
+       "password":os.environ["ADMIN_PASSWORD"],
+       "confirm_email":"admin@example.com","confirmation":"ELIMINA"}).status_code==409
+    deleted=remove(os.environ["ADMIN_PASSWORD"])
+    assert deleted.status_code==200,deleted.text
+    assert deleted.json()["revoked_pending_invitations"]==1
+    assert deleted.json()["historical_requests_preserved"] is True
+    assert remove(os.environ["ADMIN_PASSWORD"]).status_code==404
+    users=admin.get("/api/users").json()
+    assert all(u["id"]!=victim_id for u in users)
+    assert admin.get("/r/"+token_pending).status_code==410
+    history=admin.get(f"/api/requests/{completed_id}")
+    assert history.status_code==200,history.text
+    assert history.json()["protocol_number"]=="CRI-VE/2042/000001"
+    assert history.json()["data"]["event_name"]=="Evento storico conservato"
+    with backend.db() as c:
+        archived=backend.fetchone(c,'SELECT archived_at FROM requests WHERE id=:id',
+                                 {'id':pending_id})
+        assert archived["archived_at"] is not None
+        actions=c.execute(backend.text(
+          'SELECT action FROM audit WHERE action LIKE :action'),
+          {'action':'account_deleted_by_%_user_'+str(victim_id)}).scalars().all()
+        assert len(actions)==1
+
+
 def test_user_activation_and_case_lifecycle(monkeypatch):
     monkeypatch.setattr(backend,'OWNER_DELETE_EMAIL','admin@example.com')
     monkeypatch.setattr(backend,"now_venice",lambda:"2026-10-18T19:00:00+02:00")
