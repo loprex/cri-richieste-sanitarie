@@ -89,6 +89,7 @@ def get_token_record(token):
     if not re.fullmatch(r'[A-Za-z0-9_-]{35,128}',token):raise HTTPException(404,'Link non valido')
     with db() as c:r=fetchone(c,'SELECT * FROM requests WHERE token_hash=:hash',{'hash':digest(token)})
     if not r:raise HTTPException(404,'Link non trovato')
+    if r.get('archived_at'):raise HTTPException(410,'Link revocato: richiesta archiviata')
     if datetime.fromisoformat(r['expires_at'])<now():raise HTTPException(410,'Link scaduto')
     return r
 
@@ -384,7 +385,7 @@ def set_archived(id:int, request:Request, archived:bool=True):
     with db() as c:
         r=fetchone(c,'SELECT id,archived_at FROM requests WHERE id=:id',{'id':id})
         if not r:raise HTTPException(404,'Richiesta inesistente')
-        c.execute(text('UPDATE requests SET archived_at=:archived WHERE id=:id'),{'archived':iso() if archived else None,'id':id})
+        c.execute(text('UPDATE requests SET archived_at=:archived, token_hash=CASE WHEN :archive_flag THEN :revoked_hash ELSE token_hash END WHERE id=:id'),{'archived':iso() if archived else None,'archive_flag':archived,'revoked_hash':digest('revoked:'+secrets.token_urlsafe(48)),'id':id})
         audit(c,id,'archived' if archived else 'restored')
     return {'ok':True,'archived':archived}
 
