@@ -28,6 +28,21 @@ def test_public_routes_present():
     assert c.get("/").status_code==200
     assert c.get("/health").json()=={"status":"ok"}
 
+def test_user_table_shows_all_controls_and_last_login():
+    from pathlib import Path
+    directory=Path(backend.__file__).parent/"static"
+    js=(directory/"admin.js").read_text()
+    html=(directory/"index.html").read_text()
+    assert "Ultimo login" in html
+    assert "lastLoginHtml(u.last_login_at)" in js
+    assert "userManageButton" not in js
+    assert "user-details-row" not in js
+    assert "class=\\"userEmail\\"" in js
+    assert "saveRole" in js and "saveEmail" in js
+    assert "sendSetup" in js and "statusButton" in js
+    assert "deleteAccountButton" in js
+    assert "id=\\"usersList\\"" in html
+
 def test_single_prior_event_selection_markup():
     # Client may select fields freely, but never combine two old events.
     from pathlib import Path
@@ -108,6 +123,8 @@ def test_login_three_failures_manual_lock_and_password_recovery(monkeypatch):
     users=admin.get("/api/users").json()
     found=next(item for item in users if item["id"]==uid)
     assert found["auto_locked_at"] and found["failed_login_attempts"]==3
+    # Last login is recorded only after a successful login, not failed guesses.
+    assert found["last_login_at"] is None
 
     # Always return the same response for valid, unknown or suppressed addresses.
     hidden=c.post("/api/password/forgot",json={"email":"nobody-registered@example.com"})
@@ -125,10 +142,18 @@ def test_login_three_failures_manual_lock_and_password_recovery(monkeypatch):
     assert c.get("/reset/"+token).status_code==410
     assert c.post("/api/login",json={"email":email,"password":new_password}).status_code==200
     with backend.db() as tx:
-        row=backend.fetchone(tx,"SELECT failed_login_attempts,auto_locked_at FROM app_users WHERE id=:id",{"id":uid})
+        row=backend.fetchone(tx,"SELECT failed_login_attempts,auto_locked_at,last_login_at FROM app_users WHERE id=:id",{"id":uid})
     assert row["failed_login_attempts"]==0 and row["auto_locked_at"] is None
+    assert row["last_login_at"] is not None
+    successful_login_at=row["last_login_at"]
+    # Failed attempts after a successful login do not overwrite its timestamp.
+    assert c.post("/api/login",json={"email":email,"password":"Wrong-again-000"}).status_code==401
+    with backend.db() as tx:
+        assert backend.fetchone(tx,"SELECT last_login_at FROM app_users WHERE id=:id",{"id":uid})["last_login_at"]==successful_login_at
 
     # Auto-block can also be lifted directly by another administrator.
+    with backend.db() as tx:
+        tx.execute(backend.text("UPDATE app_users SET failed_login_attempts=0 WHERE id=:id"),{"id":uid})
     for expected in (401,401,423):
         attempt=c.post("/api/login",json={"email":email,"password":"Wrong-again-000"})
         assert attempt.status_code==expected,attempt.text
