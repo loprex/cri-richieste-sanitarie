@@ -297,22 +297,51 @@ def mail_request(id,request_data,force=False):
         if r['mailed_at'] and not force:return 'already_sent'
         enabled=get_setting(c,'mail_enabled','false')=='true'
         rec=get_setting(c,'mail_recipients','')
-        subject=get_setting(c,'mail_subject','Nuova richiesta sanitaria CRI #{id} - {event}')
-        body=get_setting(c,'mail_body','Richiesta #{id} per {event}. Documento da verificare e approvare.')
+        subject=get_setting(c,'mail_subject','Piano Sanitario CRI - protocollo {protocol} - {event}')
+        body=get_setting(c,'mail_body','Nuova richiesta sanitaria per {event}. Documento da verificare e approvare.')
+        # Explicit administrative recipients + all active administrators with email.
+        admins=[x['email'] for x in c.execute(text("""SELECT email FROM app_users
+            WHERE role='admin' AND active=TRUE AND email IS NOT NULL""")).mappings()]
+        creator=fetchone(c,'SELECT email FROM app_users WHERE id=:id AND active=TRUE',
+                         {'id':r['owner_user_id']}) if r.get('owner_user_id') else None
     if not enabled:return 'disabled'
-    recipients=[x.strip() for x in re.split(r'[,;\n]',rec) if x.strip()]
+    configured=[x.strip() for x in re.split(r'[,;\n]',rec) if x.strip()]
+    admins=configured+admins
+    if not admins:return 'admin_recipient_missing'
+    if not creator or not creator.get('email'):
+        return 'creator_email_missing'
+    recipient_candidates=admins+[creator['email']]
+    # Avoid duplicate emails and header injection; retain first occurrence.
+    recipients=list(dict((x.casefold(),x) for x in recipient_candidates
+                         if re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',x.strip())).values())
     if not recipients:return 'no_recipients'
-    host=os.getenv('SMTP_HOST','');port=int(os.getenv('SMTP_PORT','587'))
-    sender=os.getenv('SMTP_FROM','');user=os.getenv('SMTP_USER','');password=os.getenv('SMTP_PASSWORD','')
+    host=os.getenv('SMTP_HOST','').strip()
+    port=int(os.getenv('SMTP_PORT','587'))
+    sender=os.getenv('SMTP_FROM','').strip()
+    user=os.getenv('SMTP_USER','').strip()
+    password=os.getenv('SMTP_PASSWORD','')
     if not host or not sender:return 'smtp_not_configured'
-    label={'id':id,'event':request_data.get('event_name',''),'organizer':request_data.get('org_name','')}
-    def fmt(s):
-        for k,v in label.items():s=s.replace('{'+k+'}',str(v))
-        return s
-    msg=EmailMessage();msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender));msg['To']=', '.join(recipients);msg['Subject']=fmt(subject)
-    msg.set_content(fmt(body)+'\n\nDocumento allegato: precompilato, NON APPROVATO dalla CRI.')
+    protocol=r.get('protocol_number') or f"CRI-VE/BOZZA/{id:06d}"
+    date=r.get('protocol_at') or r.get('submitted_at') or ''
+    label={'id':id,'event':request_data.get('event_name',''),
+           'organizer':request_data.get('org_name',''),'protocol':protocol,'protocol_date':date}
+    def fmt(template):
+        for key,value in label.items():template=template.replace('{'+key+'}',str(value))
+        return template
+    message_subject=fmt(subject)
+    if protocol not in message_subject:message_subject+=' - '+protocol
+    msg=EmailMessage()
+    msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
+    msg['To']=', '.join(recipients)
+    msg['Subject']=message_subject
+    msg.set_content(fmt(body)+'\n\nProtocollo interno: '+protocol+
+       '\nData registrazione: '+date+
+       '\nDocumento allegato: Piano Sanitario precompilato, BOZZA NON APPROVATA dalla CRI.')
     document=render_excel(BASE/'templates'/'piano_sanitario_2026.xlsx',request_data)
-    msg.add_attachment(document,maintype='application',subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',filename=f'piano_sanitario_bo zza_{id}.xlsx'.replace(' ',''))
+    safe_protocol=protocol.replace('/','-')
+    msg.add_attachment(document,maintype='application',
+      subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename=f'piano_sanitario_bozza_{safe_protocol}.xlsx')
     try:
         if os.getenv('SMTP_SSL','false').lower()=='true':
             with smtplib.SMTP_SSL(host,port,timeout=20,context=ssl.create_default_context()) as smtp:
@@ -324,25 +353,16 @@ def mail_request(id,request_data,force=False):
                 if user:smtp.login(user,password)
                 smtp.send_message(msg)
     except Exception as exc:
-        logger.exception('Email delivery failed for request %d',id)
-        with db() as c:c.execute(text('UPDATE requests SET mail_error=:e WHERE id=:id'),{'e':type(exc).__name__,'id':id});audit(c,id,'mail_failed')
+        logger.warning('Email delivery failed request=%d type=%s',id,type(exc).__name__)
+        with db() as c:
+            c.execute(text('UPDATE requests SET mail_error=:err WHERE id=:id'),{'err':type(exc).__name__,'id':id})
+            audit(c,id,'mail_failed')
         return 'failed'
-    with db() as c:c.execute(text('UPDATE requests SET mailed_at=:at,mail_error=NULL WHERE id=:id'),{'at':iso(),'id':id});audit(c,id,'mail_sent')
+    with db() as c:
+        c.execute(text('UPDATE requests SET mailed_at=:at,mail_error=NULL WHERE id=:id'),{'at':iso(),'id':id})
+        audit(c,id,'mail_sent')
     return 'sent'
 
-@app.middleware('http')
-async def headers(request:Request,call_next):
-    resp=await call_next(request)
-    resp.headers['X-Content-Type-Options']='nosniff'
-    resp.headers['Referrer-Policy']='no-referrer'
-    resp.headers['X-Frame-Options']='DENY'
-    resp.headers['Cache-Control']='no-store'
-    resp.headers['Content-Security-Policy']="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'"
-    return resp
-@app.get('/')
-def root():return FileResponse(BASE/'static'/'index.html')
-@app.get('/health')
-def health():return {'status':'ok'}
 @app.post('/api/login')
 def login(body:Login,response:Response,request:Request):
     ip=request.client.host if request.client else 'unknown'
@@ -654,7 +674,7 @@ def export_data(id:int,request:Request):
 @app.get('/api/settings/mail')
 def get_mail_settings(request:Request):
     require_admin(request)
-    with db() as c:return {'enabled':get_setting(c,'mail_enabled','false')=='true','recipients':get_setting(c,'mail_recipients'),'subject':get_setting(c,'mail_subject','Nuova richiesta sanitaria CRI #{id} - {event}'),'body':get_setting(c,'mail_body','È stata ricevuta la richiesta #{id} per {event}. Il piano allegato è una BOZZA da verificare e approvare dalla CRI.'),'smtp_ready':bool(os.getenv('SMTP_HOST') and os.getenv('SMTP_FROM'))}
+    with db() as c:return {'enabled':get_setting(c,'mail_enabled','false')=='true','recipients':get_setting(c,'mail_recipients'),'subject':get_setting(c,'mail_subject','Piano Sanitario CRI - protocollo {protocol} - {event}'),'body':get_setting(c,'mail_body','È stata ricevuta la richiesta #{id} per {event}. Il piano allegato è una BOZZA da verificare e approvare dalla CRI.'),'smtp_ready':bool(os.getenv('SMTP_HOST') and os.getenv('SMTP_FROM'))}
 @app.put('/api/settings/mail')
 def update_mail_settings(body:MailSettings,request:Request):
     require_admin(request)
