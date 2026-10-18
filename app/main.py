@@ -353,9 +353,11 @@ def login(body:Login,response:Response,request:Request):
             if not _LOGIN_ATTEMPTS[old_ip]:del _LOGIN_ATTEMPTS[old_ip]
         if len(_LOGIN_ATTEMPTS.get(ip,[]))>=5:
             raise HTTPException(429,'Troppi tentativi: riprovare tra 15 minuti')
-    username=body.username.strip().lower()
+    identity=body.email.strip().lower()
     with db() as c:
-        user=fetchone(c,'SELECT * FROM app_users WHERE username=:username',{'username':username})
+        user=fetchone(c,"""SELECT * FROM app_users
+            WHERE LOWER(email)=:identity OR (email IS NULL AND username=:identity)""",
+            {'identity':identity})
     if not user or not user['active'] or not verify_password(body.password,user['password_hash']):
         with _LOGIN_LOCK:_LOGIN_ATTEMPTS.setdefault(ip,[]).append(current)
         raise HTTPException(401,'Credenziali non valide')
@@ -363,11 +365,15 @@ def login(body:Login,response:Response,request:Request):
     expiry=str(int((now()+timedelta(hours=8)).timestamp()))
     session_value=str(user['id'])+':'+user['auth_version']+':'+expiry
     response.set_cookie('cri_admin',session_value+'.'+sign(session_value),httponly=True,secure=SECURE,samesite='strict',max_age=28800)
-    return {'ok':True,'csrf':sign('csrf:'+session_value),'username':user['username'],'display_name':user['display_name'],'is_admin':user['role']=='admin'}
+    return {'ok':True,'csrf':sign('csrf:'+session_value),'email':user['email'],
+            'legacy_login':user['username'] if not user['email'] else None,
+            'display_name':user['display_name'],'is_admin':user['role']=='admin'}
 @app.get('/api/session')
 def session(request:Request):
     user=require_user(request)
-    return {'ok':True,'csrf':user['csrf'],'username':user['username'],'display_name':user['display_name'],'is_admin':user['role']=='admin'}
+    return {'ok':True,'csrf':user['csrf'],'email':user['email'],
+            'legacy_login':user['username'] if not user['email'] else None,
+            'display_name':user['display_name'],'is_admin':user['role']=='admin'}
 @app.post('/api/logout')
 def logout(request:Request,response:Response):
     require_user(request)
@@ -378,24 +384,36 @@ def logout(request:Request,response:Response):
 def get_users(request:Request):
     require_admin(request)
     with db() as c:
-        rows=c.execute(text('SELECT id,username,display_name,role,active,created_at FROM app_users ORDER BY id')).mappings().all()
+        rows=c.execute(text('SELECT id,email,username,display_name,role,active,created_at FROM app_users ORDER BY id')).mappings().all()
     return [dict(row) for row in rows]
 @app.post('/api/users')
 def create_user(body:NewOperator,request:Request):
     require_admin(request)
-    username=body.username.strip().lower()
-    if not re.fullmatch(r'[a-z0-9][a-z0-9._-]{2,63}',username):
-        raise HTTPException(422,'Username non valido: lettere, numeri, punti, trattini e underscore')
+    email=str(body.email).strip().lower()
     with db() as c:
-        if fetchone(c,'SELECT id FROM app_users WHERE username=:username',{'username':username}):
-            raise HTTPException(409,'Username già presente')
+        if fetchone(c,'SELECT id FROM app_users WHERE LOWER(email)=:email',{'email':email}):
+            raise HTTPException(409,'Email già assegnata a un account')
+        username='account-'+secrets.token_hex(12)
         uid=c.execute(text("""INSERT INTO app_users
-            (username,display_name,password_hash,role,active,auth_version,created_at)
-            VALUES(:username,:display_name,:pw,'operator',TRUE,:version,:at) RETURNING id"""),
-            {'username':username,'display_name':body.display_name.strip(),
+            (username,email,display_name,password_hash,role,active,auth_version,created_at)
+            VALUES(:username,:email,:display_name,:pw,'operator',TRUE,:version,:at) RETURNING id"""),
+            {'username':username,'email':email,'display_name':body.display_name.strip(),
              'pw':password_hash(body.password),'version':secrets.token_hex(16),'at':iso()}).scalar_one()
         audit(c,None,'user_created_'+str(uid))
-    return {'ok':True,'id':uid,'username':username}
+    return {'ok':True,'id':uid,'email':email}
+@app.put('/api/users/{id}/email')
+def set_user_email(id:int,body:UpdateOperatorEmail,request:Request):
+    require_admin(request)
+    email=str(body.email).strip().lower()
+    with db() as c:
+        user=fetchone(c,'SELECT id,email FROM app_users WHERE id=:id',{'id':id})
+        if not user:raise HTTPException(404,'Utente non trovato')
+        existing=fetchone(c,'SELECT id FROM app_users WHERE LOWER(email)=:email',{'email':email})
+        if existing and existing['id']!=id:raise HTTPException(409,'Email già assegnata a un account')
+        c.execute(text('UPDATE app_users SET email=:email,auth_version=:version WHERE id=:id'),
+            {'email':email,'version':secrets.token_hex(16),'id':id})
+        audit(c,None,'user_email_updated_'+str(id))
+    return {'ok':True,'sessions_revoked':True}
 @app.put('/api/users/{id}/password')
 def reset_user_password(id:int,body:ResetOperatorPassword,request:Request):
     require_admin(request)
