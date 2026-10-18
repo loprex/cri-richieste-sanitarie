@@ -30,3 +30,25 @@
 .reuse-field-group{border-top:1px solid #e7dfe1;margin-top:14px;padding-top:12px}
 .reuse-field-group:first-child{border-top:0;padding-top:0}
 .reuse-field-group h4{font-size:15px;margin:0 0 8px;color:#951426}
+
+/* Readable previous-event picker with an accessible year filter */
+.previous-events-toolbar{display:flex;align-items:end;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:18px 0 7px}
+.previous-years-field{display:flex;flex-direction:column;gap:6px;min-width:180px}
+.previous-years-field label{font-size:13px;font-weight:700;color:#283347}
+.previous-years-field select{font:inherit;min-width:180px;max-width:100%;padding:10px 12px;background:#fff;border:1px solid #cbd3dd;border-radius:9px;color:#17212d}
+#previousEventsCount{margin:0 0 9px;font-size:13px}
+.previous-year-note{font-size:12px;margin:4px 0 14px}
+.event-choice-list{display:flex;flex-direction:column;gap:10px}
+.previous-event-card{display:flex;align-items:center;gap:13px;border:1px solid #d9dfe8;border-radius:12px;padding:15px 16px;background:#fff;cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s;margin:0}
+.previous-event-card:hover{border-color:#c78b96;background:#fff9fa}
+.previous-event-card:has(input:checked){border:2px solid #b5162e;padding:14px 15px;background:#fff6f7;box-shadow:0 0 0 2px #b5162e12}
+.previous-event-card:focus-within{outline:2px solid #b5162e;outline-offset:2px}
+.previous-event-card input[type=radio]{width:20px;height:20px;flex:0 0 20px;accent-color:#b5162e;margin:0}
+.previous-event-content{display:flex;flex-direction:column;gap:7px;flex:1;min-width:0}
+.previous-event-title{font-size:16px;font-weight:700;color:#152131;line-height:1.3;overflow-wrap:anywhere}
+.previous-event-meta{display:flex;gap:7px 16px;flex-wrap:wrap;font-size:12px;color:#536173;line-height:1.45}
+.previous-event-side{display:flex;align-items:flex-end;flex-direction:column;gap:7px;flex:0 0 auto;color:#647084}
+.previous-event-year{font-size:13px;color:#97162d;background:#fbecef;padding:5px 9px;border-radius:20px;font-weight:750}
+.previous-event-side small{font-size:12px;white-space:nowrap}
+.previous-events-empty{padding:22px 14px;text-align:center;border:1px dashed #cbd3dd;border-radius:12px;background:#fff;color:#526173}
+@media(max-width:600px){.previous-event-card{align-items:flex-start;flex-wrap:wrap;padding:13px}.previous-event-card:has(input:checked){padding:12px}.previous-event-side{flex-basis:100%;padding-left:33px;flex-direction:row;align-items:center}.previous-event-meta{gap:6px 12px}.previous-years-field,.previous-years-field select{min-width:150px}}
