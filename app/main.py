@@ -819,8 +819,11 @@ def address_suggestions(token:str, q:str=Query(min_length=3,max_length=110)):
             raise HTTPException(429,'Troppe ricerche indirizzo: attendi un minuto')
         times.append(current)
         _ADDRESS_LOOKUPS[key]=times
+    # Photon demo instances do not always have Italian enabled. Supplying
+    # lang=it can cause HTTP 400 although normal address searches work.
+    # Omit the optional language parameter and let Photon return local names.
     url='https://photon.komoot.io/api/?'+urlencode(
-        {'q':query,'lang':'it','limit':8})
+        {'q':query,'limit':8})
     req=UpstreamRequest(url,headers={'Accept':'application/json',
         'User-Agent':'CRI-Venezia-Address-Form/1.0'})
     try:
