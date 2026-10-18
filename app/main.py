@@ -529,7 +529,8 @@ def login(body:Login,response:Response,request:Request):
                   {'at':iso(),'version':secrets.token_hex(16),'id':user['id']})
                 if result and result['auto_locked_at']:
                     audit(c,None,'login_auto_locked_'+str(user['id']))
-                    raise HTTPException(423,'Account bloccato dopo 3 password errate. Usa «Password dimenticata?» o contatta un amministratore.')
+            if result and result['auto_locked_at']:
+                raise HTTPException(423,'Account bloccato dopo 3 password errate. Usa «Password dimenticata?» o contatta un amministratore.')
         raise HTTPException(401,'Credenziali non valide')
     with db() as c:
         # In case a parallel request locked the account while checking PBKDF2,
@@ -643,6 +644,7 @@ def activate_user(token:str,body:SetPassword):
     with db() as c:
         result=c.execute(text("""UPDATE app_users SET password_hash=:password,
             password_setup_required=FALSE,setup_token_hash=NULL,setup_expires_at=NULL,
+            failed_login_attempts=0,auto_locked_at=NULL,
             auth_version=:version WHERE id=:id AND setup_token_hash=:hash
             AND setup_expires_at>:current AND password_setup_required=TRUE AND active=TRUE"""),
            {'password':password_hash(body.password),'version':secrets.token_hex(16),
@@ -656,7 +658,8 @@ def get_users(request:Request):
     require_admin(request)
     with db() as c:
         rows=c.execute(text("""SELECT id,email,username,display_name,role,active,created_at,
-            password_setup_required,setup_expires_at FROM app_users ORDER BY id""")).mappings().all()
+            password_setup_required,setup_expires_at,failed_login_attempts,auto_locked_at
+            FROM app_users ORDER BY id""")).mappings().all()
     return [dict(row) for row in rows]
 @app.post('/api/users')
 def create_user(body:NewOperator,request:Request):
@@ -717,9 +720,24 @@ def set_user_status(id:int,body:OperatorStatus,request:Request):
     with db() as c:
         user=fetchone(c,'SELECT id FROM app_users WHERE id=:id',{'id':id})
         if not user:raise HTTPException(404,'Utente non trovato')
-        c.execute(text('UPDATE app_users SET active=:active,auth_version=:version WHERE id=:id'),
+        c.execute(text("""UPDATE app_users SET active=:active,auth_version=:version,
+             failed_login_attempts=0,auto_locked_at=NULL WHERE id=:id"""),
              {'active':body.active,'version':secrets.token_hex(16),'id':id})
         audit(c,None,('user_enabled_' if body.active else 'user_disabled_')+str(id))
+    return {'ok':True}
+
+@app.post('/api/users/{id}/unlock')
+def unlock_user(id:int,request:Request):
+    admin=require_admin(request)
+    with db() as c:
+        user=fetchone(c,'SELECT id,active,auto_locked_at FROM app_users WHERE id=:id',{'id':id})
+        if not user:raise HTTPException(404,'Utente non trovato')
+        if not user['active']:
+            raise HTTPException(409,'Utente bloccato manualmente: usa Sblocca accesso')
+        c.execute(text("""UPDATE app_users SET failed_login_attempts=0,
+            auto_locked_at=NULL,auth_version=:version WHERE id=:id"""),
+            {'version':secrets.token_hex(16),'id':id})
+        audit(c,None,'login_unlocked_by_'+str(admin['id'])+'_user_'+str(id))
     return {'ok':True}
 
 def send_invitation(request_id:int, recipient:str, url:str, days:int, event_name:str='', event_city:str='')->str:
