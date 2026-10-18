@@ -295,6 +295,15 @@ class MailSettings(BaseModel):
     subject:str=Field(default='Nuova richiesta sanitaria CRI #{id} - {event}',max_length=300)
     body:str=Field(default='È stata ricevuta la richiesta #{id} per {event}. Il piano allegato è una BOZZA da verificare e approvare dalla CRI.',max_length=4000)
 
+def plan_filename(request_row, draft=True):
+    # The actual protocol registration date, rather than the download date,
+    # keeps attachments recognisable even when reissued later.
+    date=str(request_row.get('protocol_at') or request_row.get('submitted_at') or request_row.get('created_at') or '')
+    compact=re.sub(r'[^0-9]','',date[:10])[:8] or 'data_sconosciuta'
+    protocol=request_row.get('protocol_number')
+    safe=re.sub(r'[^A-Za-z0-9_-]','-',str(protocol))[:70] if protocol else f'senza_protocollo_{request_row["id"]}'
+    return f'piano_sanitario_{"bozza_" if draft else ""}{compact}_{safe}.xlsx'
+
 def mail_request(id,request_data,force=False):
     with db() as c:
         r=fetchone(c,'SELECT * FROM requests WHERE id=:id',{'id':id})
@@ -344,10 +353,9 @@ def mail_request(id,request_data,force=False):
        '\nData registrazione: '+date+
        '\nDocumento allegato: Piano Sanitario precompilato, BOZZA NON APPROVATA dalla CRI.')
     document=render_excel(BASE/'templates'/'piano_sanitario_2026.xlsx',request_data)
-    safe_protocol=protocol.replace('/','-') if r.get('protocol_number') else f'richiesta_{id}'
     msg.add_attachment(document,maintype='application',
       subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      filename=f'piano_sanitario_bozza_{safe_protocol}.xlsx')
+      filename=plan_filename(r))
     try:
         if os.getenv('SMTP_SSL','false').lower()=='true':
             with smtplib.SMTP_SSL(host,port,timeout=20,context=ssl.create_default_context()) as smtp:
@@ -834,7 +842,7 @@ def excel(id:int,request:Request):
     if not r:raise HTTPException(404,'Richiesta inesistente')
     if r['status'] not in ('submitted','approved'):raise HTTPException(409,'Invio non ancora completato')
     content=render_excel(BASE/'templates'/'piano_sanitario_2026.xlsx',json.loads(r['payload']))
-    return StreamingResponse(io.BytesIO(content),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="piano_sanitario_{id}.xlsx"'})
+    return StreamingResponse(io.BytesIO(content),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{plan_filename(r)}"'})
 @app.get('/api/requests/{id}/data')
 def export_data(id:int,request:Request):
     require_request_access(request,id)
