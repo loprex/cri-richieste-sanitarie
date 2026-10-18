@@ -98,6 +98,7 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     data={
        "org_name":"Ente esempio","org_contact":"Referente Esempio",
        "org_address":"Via Roma 10 Venezia","org_phone":"0410000000",
+       "org_vat":"00000000000","org_sdi":"ABCDEFG","org_pec":"protocollo@example.com",
        "org_email":"organizzatore@example.com","event_name":"Porte Aperte",
        "event_city":"Venezia","event_dates":"2026-11-24",
        "event_time":"2026-11-24 09:00-18:00",
@@ -148,8 +149,15 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     assert old[0]["data"]["event_city"]=="Venezia"
     assert "event_dates" not in old[0]["data"]
     assert "event_slots" not in old[0]["data"]
+    assert old[0]["data"]["org_name"]=="Ente esempio"
+    assert old[0]["data"]["org_contact"]=="Referente Esempio"
+    assert old[0]["data"]["org_address"]=="Via Roma 10 Venezia"
+    assert old[0]["data"]["org_phone"]=="0410000000"
+    assert old[0]["data"]["org_vat"]=="00000000000"
+    assert old[0]["data"]["org_sdi"]=="ABCDEFG"
+    assert old[0]["data"]["org_pec"]=="protocollo@example.com"
+    # Invitation email stays fixed; previous org email is never copied.
     assert "org_email" not in old[0]["data"]
-    assert "org_vat" not in old[0]["data"]
     assert "protocol_number" not in old[0]["data"]
     other=maria.post("/api/requests",headers=mh,json={
         "customer_email":"another@example.com","event_name":"Evento diverso",
