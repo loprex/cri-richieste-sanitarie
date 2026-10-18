@@ -224,7 +224,15 @@ function enableAddressAutocomplete(input, list, status){
         const data=await response.json();
         if(thisSearch!==serial||input.value.trim()!==q)return;
         if(data.available===false){
-          report('Il servizio indirizzi non è momentaneamente disponibile. Puoi inserire l’indirizzo manualmente.');
+          const reasons={
+            timeout:'La ricerca indirizzi è troppo lenta (timeout del servizio).',
+            rate_limited:'Il servizio indirizzi ha limitato temporaneamente le richieste.',
+            provider_http:'Il servizio indirizzi sta rispondendo con un errore.',
+            connection:'Il server non riesce a collegarsi al servizio indirizzi.',
+            invalid_response:'Il servizio indirizzi ha restituito una risposta non valida.'
+          };
+          report((reasons[data.reason]||'Il servizio indirizzi non è momentaneamente disponibile.')+
+            ' Puoi inserire l’indirizzo manualmente.');
           return;
         }
         const suggestions=Array.isArray(data.suggestions)?data.suggestions:[];
