@@ -136,51 +136,82 @@ $('testMailButton').onclick=async()=>{
  finally{button.disabled=false}
 };
 
-async function loadUsers(){
- if(!currentUser.can_delete_accounts)return;
- try{
-  const users=await api('/users');
-  $('usersList').innerHTML=users.map(u=>{
+let cachedUsers=[];
+let expandedUserId=null;
+
+function renderUsers(){
+ const textFilter=$('usersSearch').value.trim().toLocaleLowerCase('it');
+ const roleFilter=$('usersRoleFilter').value;
+ const results=cachedUsers.filter(u=>{
+  const matchesText=!textFilter||[u.display_name,u.email,u.username].some(v=>
+    String(v||'').toLocaleLowerCase('it').includes(textFilter));
+  return matchesText&&(roleFilter==='all'||u.role===roleFilter);
+ });
+ $('usersCount').textContent=results.length+' di '+cachedUsers.length+' account visualizzati';
+ if(!results.some(u=>u.id===expandedUserId))expandedUserId=null;
+ if(!results.length){
+   $('usersList').innerHTML='<tr><td colspan="4" class="users-empty">Nessun utente corrisponde ai filtri.</td></tr>';
+   return;
+ }
+ $('usersList').innerHTML=results.map(u=>{
    const self=Number(u.id)===Number(currentUser.id);
-   const lockedManually=!u.active;
-   const lockedAutomatically=!!u.auto_locked_at;
-   const state=lockedManually?'Bloccato manualmente':
-     lockedAutomatically?'Bloccato dopo 3 errori':
-     u.password_setup_required?'In attesa di password':'Attivo';
-   const attempts=lockedManually||lockedAutomatically?'':(' · '+(u.failed_login_attempts||0)+'/3 errori');
-   const actions=(self?'Account in uso':
-     '<button type="button" class="secondary statusButton" data-user="'+u.id+
-     '" data-active="'+String(u.active)+'">'+(lockedManually?'Sblocca accesso':'Blocca accesso')+'</button>'+
-     (lockedAutomatically&&u.active?
-      ' <button type="button" class="secondary unlockButton" data-user="'+u.id+
-      '">Sblocca dopo errori</button>':''))+
-     (currentUser.can_delete_accounts&&!self&&u.username!=='admin'?
-      ' <button type="button" class="deleteAccountButton" data-user="'+u.id+'">Elimina account</button>':'');
-   return '<tr><td><b>'+esc(u.display_name)+'</b><div class="muted">'+
-     esc(u.email||'Email da configurare (accesso temporaneo: '+u.username+')')+
-     '</div><input type="email" class="userEmail" data-user="'+u.id+
-     '" value="'+esc(u.email||'')+'" placeholder="email@cri.it" aria-label="Email per '+
-     esc(u.display_name)+'"><button type="button" class="secondary saveEmail" data-user="'+u.id+
-     '">Salva email</button></td><td>'+
-     (u.role==='superadmin'
-       ?'<strong class="role-superadmin">Super Admin</strong><div class="muted">Ruolo riservato</div>'
-       :'<label class="sr-only" for="role-'+u.id+'">Ruolo di '+esc(u.display_name)+'</label>'+
-        '<select id="role-'+u.id+'" class="userRole" data-user="'+u.id+'" aria-label="Ruolo di '+esc(u.display_name)+'">'+
-        '<option value="operator"'+(u.role==='operator'?' selected':'')+'>Utente operatore</option>'+
-        '<option value="admin"'+(u.role==='admin'?' selected':'')+'>Admin</option></select>'+
-        '<button type="button" class="secondary saveRole" data-user="'+u.id+'">Salva ruolo</button>')+
-     '</td><td><span class="'+(lockedManually||lockedAutomatically?'account-locked':'')+'">'+
-     esc(state)+'</span><div class="muted">'+esc(attempts)+'</div></td><td>'+
-     '<button type="button" class="secondary sendSetup" data-user="'+u.id+'"'+
-     (lockedManually?' disabled title="Sblocca prima l’account"':'')+'>'+
-     (u.email?.toLowerCase()==='amministrazione@crivenezia.it'?'Invia link (solo se email abilitata)':
-      lockedManually?'Sblocca prima l’account':
-      u.password_setup_required?'Reinvia link':'Invia reset password')+
-     '</button></td><td>'+actions+'</td></tr>';
-  }).join('');
-  document.querySelectorAll('.saveRole').forEach(b=>b.onclick=async()=>{
+   const opened=expandedUserId===u.id;
+   const manuallyLocked=!u.active;
+   const autoLocked=!!u.auto_locked_at;
+   const pending=!!u.password_setup_required;
+   const state=manuallyLocked?'Bloccato manualmente':
+     autoLocked?'Bloccato dopo 3 errori':pending?'Attivazione in attesa':'Attivo';
+   const stateClass=manuallyLocked||autoLocked?'state-locked':pending?'state-pending':'state-active';
+   const role=roleLabel(u.role);
+   const attempts=(!manuallyLocked&&!autoLocked&&u.failed_login_attempts)
+     ?'<small class="users-attempts">Errori password: '+u.failed_login_attempts+'/3</small>':'';
+   const userRow='<tr class="user-list-row"><td><strong class="user-list-name">'+esc(u.display_name)+
+     '</strong><small class="user-list-email">'+esc(u.email||'Email non configurata')+
+     '</small></td><td><span class="user-role-tag user-role-'+esc(u.role)+'">'+esc(role)+
+     '</span></td><td><span class="user-state '+stateClass+'">'+esc(state)+
+     '</span>'+attempts+'</td><td><button type="button" class="secondary userManageButton" data-user="'+u.id+
+     '" aria-expanded="'+opened+'" aria-controls="user-details-'+u.id+'">'+
+     (opened?'Chiudi':'Gestisci')+'</button></td></tr>';
+   if(!opened)return userRow;
+   const protectedUser=self||u.role==='superadmin';
+   const roleEdit=protectedUser
+      ?'<strong class="role-superadmin">Super Admin · ruolo protetto</strong>'
+      :'<div class="users-inline"><select class="userRole" data-user="'+u.id+'" aria-label="Ruolo di '+esc(u.display_name)+'">'+
+         '<option value="operator"'+(u.role==='operator'?' selected':'')+'>Utente operatore</option>'+
+         '<option value="admin"'+(u.role==='admin'?' selected':'')+'>Admin</option></select>'+
+         '<button type="button" class="secondary saveRole" data-user="'+u.id+'">Salva ruolo</button></div>';
+   const emailEdit='<div class="users-inline"><input type="email" class="userEmail" data-user="'+u.id+
+       '" value="'+esc(u.email||'')+'" placeholder="Email di accesso" aria-label="Email di '+esc(u.display_name)+'"'+
+       (self?' readonly':'')+'><button type="button" class="secondary saveEmail" data-user="'+u.id+'"'+
+       (self?' disabled':'')+'>Salva email</button></div>';
+   const pwdAction='<button type="button" class="secondary sendSetup" data-user="'+u.id+'"'+
+       (manuallyLocked?' disabled':'')+'>'+(pending?'Invia link attivazione':'Invia reset password')+'</button>';
+   const stateAction=protectedUser?'<p class="muted">Il tuo account principale è protetto.</p>':
+       '<button type="button" class="secondary statusButton" data-user="'+u.id+'" data-active="'+String(u.active)+'">'+
+       (manuallyLocked?'Sblocca accesso':'Blocca accesso')+'</button>'+
+       (autoLocked&&u.active?'<button type="button" class="secondary unlockButton" data-user="'+u.id+'">Sblocca dopo errori</button>':'');
+   const deleteAction=protectedUser?'':('<button type="button" class="deleteAccountButton user-danger" data-user="'+u.id+'">Elimina account</button>');
+   return userRow+'<tr id="user-details-'+u.id+'" class="user-details-row"><td colspan="4">'+
+     '<div class="user-detail-grid">'+
+     '<section class="user-detail-section"><h4>Identità e ruolo</h4><label>Email di accesso</label>'+emailEdit+
+     '<label>Ruolo assegnato</label>'+roleEdit+'</section>'+
+     '<section class="user-detail-section"><h4>Sicurezza e accesso</h4><p class="muted">'+
+       esc(state)+(autoLocked?' · blocco per password errate':'')+'</p>'+
+       '<div class="user-detail-buttons">'+pwdAction+stateAction+'</div>'+
+       (deleteAction?'<div class="user-detail-danger"><h4>Zona riservata</h4><p class="muted">La cancellazione revoca gli inviti aperti ma conserva le richieste storiche.</p>'+deleteAction+'</div>':'')+
+     '</section></div></td></tr>';
+ }).join('');
+
+ document.querySelectorAll('.userManageButton').forEach(b=>b.onclick=()=>{
+   const id=Number(b.dataset.user);
+   expandedUserId=expandedUserId===id?null:id;
+   $('deleteAccountPanel').classList.add('hidden');
+   deletingAccount=null;
+   renderUsers();
+ });
+ document.querySelectorAll('.saveRole').forEach(b=>b.onclick=async()=>{
    if(!currentUser.can_delete_accounts)return;
-   const id=Number(b.dataset.user),user=users.find(u=>u.id===id);
+   const id=Number(b.dataset.user),user=cachedUsers.find(u=>u.id===id);
    const selector=document.querySelector('.userRole[data-user="'+id+'"]');
    if(!user||!selector||selector.value===user.role)return;
    const role=selector.value;
@@ -188,66 +219,71 @@ async function loadUsers(){
    if(!confirm('Modificare il ruolo di '+user.display_name+' in '+roleLabel(role)+
       '? Le sessioni aperte saranno revocate.'))return;
    b.disabled=true;
-   try{
-     await api('/users/'+id+'/role','PUT',{role});
+   try{await api('/users/'+id+'/role','PUT',{role});
      msg('Ruolo aggiornato: '+roleLabel(role)+'.');loadUsers();
    }catch(err){msg(err.message,true)}finally{b.disabled=false}
-  });
-  document.querySelectorAll('.saveEmail').forEach(b=>b.onclick=async()=>{
+ });
+ document.querySelectorAll('.saveEmail').forEach(b=>b.onclick=async()=>{
    const id=Number(b.dataset.user),input=document.querySelector('.userEmail[data-user="'+id+'"]');
-   if(!input||!input.validity.valid||!input.value.trim()){msg('Indica un indirizzo email valido.',true);return}
+   if(!input||!input.validity.valid||!input.value.trim()){
+     msg('Indica un indirizzo email valido.',true);return
+   }
+   const current=cachedUsers.find(u=>u.id===id);
+   if(!current||input.value.trim().toLowerCase()===(current.email||'').toLowerCase())return;
    if(!confirm('Aggiornare l’email di accesso? Le sessioni esistenti verranno revocate.'))return;
-   try{
-    await api('/users/'+id+'/email','PUT',{email:input.value.trim()});
-    const current=users.find(u=>u.id===id);
-    msg('Email operatore aggiornata.');if(current&&current.id===currentUser.id){location.reload();return}
-    loadUsers();
-   }catch(err){msg(err.message,true)}
-  });
-  document.querySelectorAll('.sendSetup').forEach(b=>b.onclick=async()=>{
-   const id=Number(b.dataset.user),user=users.find(u=>u.id===id);
+   b.disabled=true;
+   try{await api('/users/'+id+'/email','PUT',{email:input.value.trim()});
+      msg('Email operatore aggiornata.');loadUsers();
+   }catch(err){msg(err.message,true)}finally{b.disabled=false}
+ });
+ document.querySelectorAll('.sendSetup').forEach(b=>b.onclick=async()=>{
+   const id=Number(b.dataset.user),user=cachedUsers.find(u=>u.id===id);
    if(!user?.email){msg('Configura prima l’email dell’operatore.',true);return}
    if(!confirm('Inviare un nuovo link via email? Il link precedente e la password attuale, se presente, saranno revocati.'))return;
    b.disabled=true;
-   try{
-    const result=await api('/users/'+id+'/send-setup','POST',{});
-    msg(result.activation_status==='sent'?'Link inviato all’operatore.':'Account in attesa: invio email non riuscito. Verifica SMTP e utilizza Reinvia link.',result.activation_status!=='sent');
-    loadUsers();
+   try{const result=await api('/users/'+id+'/send-setup','POST',{});
+     msg(result.activation_status==='sent'?'Link inviato all’operatore.':'Invio email non riuscito o sospeso. Verifica configurazione SMTP.',result.activation_status!=='sent');
+     loadUsers();
    }catch(err){msg(err.message,true)}finally{b.disabled=false}
-  });
-  document.querySelectorAll('.statusButton').forEach(b=>b.onclick=async()=>{
+ });
+ document.querySelectorAll('.statusButton').forEach(b=>b.onclick=async()=>{
    const id=Number(b.dataset.user),active=b.dataset.active==='true';
-   if(!confirm(active?'Bloccare manualmente questo account e revocare tutte le sessioni?':'Sbloccare questo account e consentire nuovamente l’accesso?'))return;
+   if(!confirm(active?'Bloccare manualmente questo account e revocare tutte le sessioni?':'Sbloccare questo account?'))return;
    b.disabled=true;
-   try{
-    await api('/users/'+id+'/status','PUT',{active:!active});
-    msg(active?'Account bloccato manualmente.':'Account sbloccato.');
-    loadUsers();
-   }catch(e){msg(e.message,true)}finally{b.disabled=false}
-  });
-  document.querySelectorAll('.unlockButton').forEach(b=>b.onclick=async()=>{
+   try{await api('/users/'+id+'/status','PUT',{active:!active});
+     msg(active?'Account bloccato manualmente.':'Account sbloccato.');loadUsers();
+   }catch(err){msg(err.message,true)}finally{b.disabled=false}
+ });
+ document.querySelectorAll('.unlockButton').forEach(b=>b.onclick=async()=>{
    const id=Number(b.dataset.user);
-   if(!confirm('Azzera i 3 errori e sblocca questo account? Le sessioni precedenti rimarranno revocate.'))return;
+   if(!confirm('Azzerare gli errori e sbloccare l’account?'))return;
    b.disabled=true;
-   try{
-    await api('/users/'+id+'/unlock','POST',{});
-    msg('Blocco automatico rimosso.');loadUsers();
-   }catch(e){msg(e.message,true)}finally{b.disabled=false}
-  });
-  document.querySelectorAll('.deleteAccountButton').forEach(b=>b.onclick=()=>{
+   try{await api('/users/'+id+'/unlock','POST',{});
+     msg('Blocco automatico rimosso.');loadUsers();
+   }catch(err){msg(err.message,true)}finally{b.disabled=false}
+ });
+ document.querySelectorAll('.deleteAccountButton').forEach(b=>b.onclick=()=>{
    if(!currentUser.can_delete_accounts)return;
-   const victim=users.find(u=>u.id===Number(b.dataset.user));
+   const victim=cachedUsers.find(u=>u.id===Number(b.dataset.user));
    if(!victim||victim.id===currentUser.id)return;
-   deletingAccount={id:victim.id,display_name:victim.display_name,
-     email:victim.email||victim.username};
+   deletingAccount={id:victim.id,display_name:victim.display_name,email:victim.email||victim.username};
    $('deleteAccountForm').reset();
    $('deleteAccountTarget').textContent='Account selezionato: '+victim.display_name+
-     ' — '+(victim.email||victim.username);
+       ' — '+(victim.email||victim.username);
    $('deleteAccountPanel').classList.remove('hidden');
    $('deleteConfirmEmail').focus();
-  });
+ });
+}
+async function loadUsers(){
+ if(!currentUser.can_delete_accounts)return;
+ try{
+   cachedUsers=await api('/users');
+   renderUsers();
  }catch(err){msg(err.message,true)}
 }
+$('usersSearch').oninput=renderUsers;
+$('usersRoleFilter').onchange=renderUsers;
+
 $('cancelAccountDeletion').onclick=()=>{
   deletingAccount=null;$('deleteAccountForm').reset();
   $('deleteAccountPanel').classList.add('hidden');
