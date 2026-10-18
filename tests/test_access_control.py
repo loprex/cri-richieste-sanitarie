@@ -62,6 +62,11 @@ def test_login_three_failures_manual_lock_and_password_recovery(monkeypatch):
     """Test DB-persistent lock, single-use recovery and admin-only manual unlocking."""
     # The production owner mailbox differs from synthetic test fixtures.
     monkeypatch.setattr(backend,'OWNER_DELETE_EMAIL','admin@example.com')
+    # Test DB is bootstrapped with a synthetic mailbox. Simulate the startup
+    # promotion that production performs for the verified Lopresti identity.
+    with backend.db() as role_db:
+        role_db.execute(backend.text(
+          "UPDATE app_users SET role='superadmin' WHERE username='admin'"))
     import uuid
     backend._LOGIN_ATTEMPTS.clear()
     backend._RESET_REQUESTS.clear()
@@ -152,6 +157,11 @@ def ah_user_id(admin):
 def test_account_deletion_is_owner_only_and_preserves_history(monkeypatch):
     import uuid
     monkeypatch.setattr(backend,'OWNER_DELETE_EMAIL','admin@example.com')
+    # Test DB is bootstrapped with a synthetic mailbox. Simulate the startup
+    # promotion that production performs for the verified Lopresti identity.
+    with backend.db() as role_db:
+        role_db.execute(backend.text(
+          "UPDATE app_users SET role='superadmin' WHERE username='admin'"))
     admin,headers=login("admin@example.com",os.environ["ADMIN_PASSWORD"])
     user_email="deleted-"+uuid.uuid4().hex[:12]+"@example.com"
     token_pending="pending"+uuid.uuid4().hex+"abcdefghijklmnopqrstuvwxyz"
@@ -218,6 +228,11 @@ def test_account_deletion_is_owner_only_and_preserves_history(monkeypatch):
 
 def test_user_activation_and_case_lifecycle(monkeypatch):
     monkeypatch.setattr(backend,'OWNER_DELETE_EMAIL','admin@example.com')
+    # Test DB is bootstrapped with a synthetic mailbox. Simulate the startup
+    # promotion that production performs for the verified Lopresti identity.
+    with backend.db() as role_db:
+        role_db.execute(backend.text(
+          "UPDATE app_users SET role='superadmin' WHERE username='admin'"))
     monkeypatch.setattr(backend,"now_venice",lambda:"2026-10-18T19:00:00+02:00")
     sent=[]
     class FakeSMTP:
@@ -236,6 +251,7 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     second_admin=next(u for u in admin.get("/api/users").json()
         if u["email"]=="amministrazione@crivenezia.it")
     assert second_admin["role"]=="admin"
+    assert admin.get("/api/session").json()["role"]=="superadmin"
     assert second_admin["password_setup_required"] is True
     # Designated admin has no initial password until activated via its own mailbox.
     assert TestClient(app).post("/api/login",json={
@@ -264,9 +280,16 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     # but cannot enumerate or change users; only the Lopresti bootstrap owner may.
     secondary_session=second_admin_client.get("/api/session").json()
     assert secondary_session["is_admin"] is True
+    assert secondary_session["role"]=="admin"
     assert secondary_session["can_delete_accounts"] is False
     assert second_admin_client.get("/api/users").status_code==403
     assert second_admin_client.get("/api/settings/mail").status_code==200
+    assert second_admin_client.put(f"/api/users/{second_admin['id']}/role",
+        headers=second_admin_headers,json={"role":"operator"}).status_code==403
+    assert admin.put(f"/api/users/{second_admin['id']}/role",
+        headers=ah,json={"role":"operator"}).status_code==409
+    assert admin.put(f"/api/users/{second_admin['id']}/role",
+        headers=ah,json={"role":"superadmin"}).status_code==422
     assert second_admin_client.post("/api/users",headers=second_admin_headers,
         json={"email":"forbidden@example.com","display_name":"Non consentito"}).status_code==403
     assert second_admin_client.put(f"/api/users/{second_admin['id']}/email",
@@ -300,6 +323,28 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
         assert TestClient(app).get("/activate/"+token).status_code==410
     maria,mh=login("maria@example.com","First-personal-password-123!")
     luca,lh=login("luca@example.com","First-personal-password-123!")
+    assert maria.get("/api/session").json()["role"]=="operator"
+    assert admin.get("/api/users").json()[0]["role"]=="superadmin"
+    luca_id=next(u["id"] for u in admin.get("/api/users").json()
+                 if u["email"]=="luca@example.com")
+    assert maria.put(f"/api/users/{luca_id}/role",headers=mh,
+        json={"role":"admin"}).status_code==403
+    assert admin.put(f"/api/users/{luca_id}/role",headers=ah,
+        json={"role":"superadmin"}).status_code==422
+    changed=admin.put(f"/api/users/{luca_id}/role",headers=ah,
+        json={"role":"admin"})
+    assert changed.status_code==200,changed.text
+    assert luca.get("/api/session").status_code==401
+    elevated,eh=login("luca@example.com","First-personal-password-123!")
+    assert elevated.get("/api/session").json()["role"]=="admin"
+    assert elevated.get("/api/settings/mail").status_code==200
+    assert elevated.get("/api/users").status_code==403
+    back=admin.put(f"/api/users/{luca_id}/role",headers=ah,
+        json={"role":"operator"})
+    assert back.status_code==200
+    assert elevated.get("/api/session").status_code==401
+    luca,lh=login("luca@example.com","First-personal-password-123!")
+    assert luca.get("/api/session").json()["role"]=="operator"
     made=maria.post("/api/requests",headers=mh,json={
        "customer_email":"organizzatore@example.com","event_name":"Porte Aperte",
        "event_city":"Venezia","days":14})
