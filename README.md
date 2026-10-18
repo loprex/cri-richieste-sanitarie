@@ -19,6 +19,16 @@ Applicazione **indipendente da LOPREXAPP**. Accesso multiutente, link casuale pe
 - Per sicurezza tutti i form usano `POST` e i pulsanti si attivano solo quando gli handler JavaScript sono caricati, impedendo l'esposizione dei dati nella query string.
 - Test automatici di sicurezza disponibili in `tests/test_access_control.py` (dipendenze `requirements-test.txt`).
 
+## Eventi, protocollo interno ed email degli operatori
+- Ogni nuova richiesta registra subito **nome evento, città, email del destinatario e giorni di validità**; nome evento e città sono mostrati nell'elenco e precompilati nel modulo ricevuto.
+- L'invio definitivo assegna in modo atomico il **protocollo gestionale interno** `CRI-VE/AAAA/NNNNNN` e la data/ora di ricezione nel fuso `Europe/Rome`. Il protocollo è unico e immutabile e **non sostituisce la protocollazione ufficiale CRI**, se prevista. Le richieste precedenti restano senza numero, non viene inventato un protocollo retroattivo.
+- La lista visualizza data di creazione, scadenza del link quando ancora da compilare, protocollo/data dopo l'invio e, per admin, email e nome dell'operatore che ha creato la richiesta.
+- I nuovi operatori accedono con **email e password**; admin assegna/modifica l'email e reimposta le password. Gli account legacy privi di email possono temporaneamente entrare con il vecchio username; dopo l'associazione dell'email lo username non è più un metodo di accesso.
+- Il primo amministratore viene migrato senza perdere la password corrente. Per assegnargli automaticamente l'email alla prima migrazione, è possibile impostare `CRI_ADMIN_EMAIL` nel servizio Coolify (opzionale), oppure utilizzare la pagina amministrativa "Utenti e password". Non usare l'indirizzo SMTP come email amministrativa per impostazione predefinita senza consenso.
+- Con **Invio automatico Piano Sanitario abilitato**, la bozza XLSX viene inviata in una sola email all'unione senza duplicati di: indirizzi admin configurati, email degli amministratori attivi e email dell'operatore creatore. **Non viene inviata automaticamente al cliente/organizzatore.** SMTP deve essere operativo, l'amministratore deve avere un destinatario configurato e l'operatore creatore deve avere un'email associata. Eventuali errori sono registrati senza perdere il protocollo e la richiesta.
+- Il reset password e la modifica email invalidano le sessioni aperte.
+- Prima del deploy in staging eseguire il backup del database, controllare i test automatici, verificare che tutti i destinatari email siano appropriati e usare solo dati di prova.
+
 ## Deploy Coolify
 - Repository GitHub dedicato / servizio nuovo, senza collegamento a Portal/SSO/LOPREXAPP.
 - Crea database **PostgreSQL dedicato**, utente e password dedicati e impostane `DATABASE_URL` (vedi `.env.example`).
