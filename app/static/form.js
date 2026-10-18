@@ -44,6 +44,66 @@ function setHistoryMode(mode){
 historyChoices.forEach(input=>input.addEventListener('change',()=>{
  if(input.checked)setHistoryMode(input.value);
 }));
+function renderPreviousEvents(){
+  const filter=document.getElementById('previousYearFilter').value;
+  const choices=document.getElementById('previousEventChoices');
+  const current=document.querySelector('input[name="previousEventChoice"]:checked');
+  const selectedId=current?current.value:null;
+  const matching=previousEvents.filter(item=>filter==='all'||
+    (Array.isArray(item.years)&&item.years.some(year=>String(year)===filter)));
+  choices.replaceChildren();
+  for(const item of matching){
+    const label=document.createElement('label');
+    label.className='previous-event-card';
+    const input=document.createElement('input');
+    input.type='radio';input.name='previousEventChoice';
+    input.className='previousChoice';input.value=String(item.id);
+    input.checked=selectedId===String(item.id);
+    const content=document.createElement('span');
+    content.className='previous-event-content';
+    const title=document.createElement('strong');
+    title.className='previous-event-title';
+    title.textContent=item.name;
+    const meta=document.createElement('span');
+    meta.className='previous-event-meta';
+    const town=(item.data&&item.data.event_city)||'Località non indicata';
+    const org=(item.data&&item.data.org_name)||'';
+    const location=document.createElement('span');
+    location.textContent=town;
+    meta.appendChild(location);
+    if(org&&org.toLocaleLowerCase('it')!==String(item.name).toLocaleLowerCase('it')){
+      const organizer=document.createElement('span');
+      organizer.textContent=org;meta.appendChild(organizer);
+    }
+    const submitted=document.createElement('span');
+    const parsed=item.submitted_at?new Date(item.submitted_at):null;
+    submitted.textContent='Inviata: '+(parsed&&!Number.isNaN(parsed.getTime())
+      ?parsed.toLocaleDateString('it-IT'):'data non disponibile');
+    meta.appendChild(submitted);
+    content.append(title,meta);
+    const side=document.createElement('span');
+    side.className='previous-event-side';
+    const year=document.createElement('span');
+    year.className='previous-event-year';
+    year.textContent=(Array.isArray(item.years)&&item.years.length
+      ?item.years.join(' / '):'Anno n.d.');
+    year.title=item.year_basis==='submission'
+      ?'Anno di invio (data dell’evento non disponibile)':'Anno di svolgimento';
+    const id=document.createElement('small');
+    id.textContent='Richiesta #'+item.id;
+    side.append(year,id);
+    label.append(input,content,side);
+    choices.append(label);
+  }
+  if(!matching.length){
+    const empty=document.createElement('p');
+    empty.className='previous-events-empty';
+    empty.textContent='Nessun evento trovato per l’anno selezionato. Prova «Tutti gli anni».';
+    choices.appendChild(empty);
+  }
+  document.getElementById('previousEventsCount').textContent=
+    matching.length+' di '+previousEvents.length+' eventi visualizzati';
+}
 async function loadPreviousEvents(){
  try{
   const response=await fetch('/api/r/'+encodeURIComponent(token)+'/previous-events',{cache:'no-store'});
@@ -51,19 +111,26 @@ async function loadPreviousEvents(){
   const items=await response.json();
   if(!Array.isArray(items)||items.length===0)return;
   previousEvents=items;
-  const choices=document.getElementById('previousEventChoices');
-  choices.replaceChildren();
-  for(const item of previousEvents){
-    const label=document.createElement('label');
-    label.className='check';
-    const input=document.createElement('input');
-    input.type='radio';input.name='previousEventChoice';input.className='previousChoice';input.value=String(item.id);
-    const date=item.submitted_at
-      ?new Date(item.submitted_at).toLocaleDateString('it-IT')
-      :'data non disponibile';
-    label.append(input,document.createTextNode(' '+item.name+' · '+date+' · richiesta #'+item.id));
-    choices.append(label);
+  const yearFilter=document.getElementById('previousYearFilter');
+  yearFilter.replaceChildren();
+  const all=document.createElement('option');
+  all.value='all';all.textContent='Tutti gli anni';
+  yearFilter.appendChild(all);
+  const years=[...new Set(previousEvents.flatMap(item=>
+    Array.isArray(item.years)?item.years:[]))]
+    .filter(year=>Number.isInteger(year))
+    .sort((a,b)=>b-a);
+  for(const year of years){
+    const option=document.createElement('option');
+    option.value=String(year);option.textContent=String(year);
+    yearFilter.appendChild(option);
   }
+  yearFilter.value='all';
+  yearFilter.onchange=()=>{
+    renderPreviousEvents();
+    document.getElementById('reuseStatus').textContent='';
+  };
+  renderPreviousEvents();
   const fieldsBox=document.getElementById('reuseFields');
   fieldsBox.replaceChildren();
   for(const group of reuseFieldGroups){
