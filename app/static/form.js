@@ -1,4 +1,4 @@
-
+const token=location.pathname.split('/').pop(),notice=document.getElementById('notice'),form=document.getElementById('form');
 let previousEvents=[];
 const reuseNames={event_name:'Nome evento',event_place:'Luogo',event_description:'Descrizione',reference_name:'Referente',reference_phone:'Telefono referente',event_type:'Tipo evento',recurrence:'Frequenza',location_type:'Caratteristiche del luogo',road_closure:'Modifica viabilità',participants_athletes:'Atleti',participants_public:'Pubblico',children:'Bambini',elderly:'Anziani',disabled:'Persone con disabilità',risk_options:'Fattori di rischio',additional_notes:'Altre note'};
 async function loadPreviousEvents(){
@@ -48,8 +48,14 @@ function fiscalCheck(s){
  s=s.trim().toUpperCase();if(!s)return true;
  if(/^\d{11}$/.test(s))return vatCheck(s);
  if(!/^[A-Z0-9]{16}$/.test(s))return false;
- const even='ABCDEFGHIJKLMNOPQRSTUVWXYZ', odd='BAKPLCQDREVOSFTGUHMINJWZYX';
- let sum=0;for(let i=0;i<15;i++){const c=s[i];const n=/\d/.test(c)?Number(c):even.indexOf(c);sum+=(i%2===0)?([1,0,5,7,9,13,15,17,19,21][n]??odd.indexOf(c)):(/\d/.test(c)?n:even.indexOf(c));}
+ const even='ABCDEFGHIJKLMNOPQRSTUVWXYZ',odd='BAKPLCQDREVOSFTGUHMINJWZYX';
+ const oddDigit=[1,0,5,7,9,13,15,17,19,21];
+ let sum=0;
+ for(let i=0;i<15;i++){
+  const c=s[i];
+  if(i%2===0)sum+=/\d/.test(c)?oddDigit[Number(c)]:odd.indexOf(c);
+  else sum+=/\d/.test(c)?Number(c):even.indexOf(c);
+ }
  return even[sum%26]===s[15];
 }
 function vatCheck(s){s=s.trim().replace(/^IT/i,'');if(!s)return true;if(!/^\d{11}$/.test(s))return false;let sum=0;for(let i=0;i<10;i++){let n=Number(s[i]);if(i%2)n=n*2>9?n*2-9:n*2;sum+=n}return (10-sum%10)%10===Number(s[10])}
@@ -64,6 +70,12 @@ function validateTax(){
 }
 form.elements.org_tax_code.addEventListener('blur',validateTax);
 form.elements.org_vat.addEventListener('blur',validateTax);
+for(const name of ['org_tax_code','org_vat']){
+ form.elements[name].addEventListener('input',()=>{
+  form.elements[name].setCustomValidity('');
+  document.getElementById(name==='org_tax_code'?'cfMessage':'vatMessage').textContent='';
+ });
+}
 let placeController=null,placeTimer=null;
 const placeInput=form.elements.event_place,suggestions=document.getElementById('placeSuggestions');
 placeInput.addEventListener('input',()=>{
@@ -82,4 +94,17 @@ placeInput.addEventListener('input',()=>{
   }catch(e){if(e.name!=='AbortError')suggestions.replaceChildren()}
  },450);
 });
-const token=location.pathname.split('/').pop(),notice=document.getElementById('notice'),form=document.getElementById('form');const fields=['org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_email','org_pec','event_name','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','additional_notes'];const risks=['Prevista vendita/consumo di alcool','Possibile consumo di droghe','Presenza categorie fragili','Evento ampiamente pubblicizzato','Presenza figure politiche/religiose','Possibili difficoltà nella viabilità','Tensioni socio-politiche','Ambiente acquatico','Palco o ponteggio temporaneo','Presenza di recinzioni','Servizi igienici','Disponibilità acqua','Protezione civile','Vigili del fuoco','Forze dell’ordine'];document.getElementById('risks').innerHTML=risks.map((r,i)=>'<label class="check"><input type="checkbox" name="risk_options" value="'+r+'">'+r+'</label>').join('');function message(m,bad=false){notice.className='notice '+(bad?'err':'good');notice.textContent=m;window.scrollTo({top:0,behavior:'smooth'})}async function init(){try{const r=await fetch('/api/r/'+token);if(!r.ok)throw Error('Link non valido, scaduto o già chiuso');const x=await r.json();if(x.status==='submitted'||x.status==='approved'){form.classList.add('hidden');message('Questa richiesta è già stata inviata e non può essere riutilizzata.');return}form.elements.org_email.value=x.customer_email||'';loadPreviousEvents();if(x.status==='draft'){if(Array.isArray(x.data.event_slots)&&x.data.event_slots.length){slotContainer.replaceChildren();x.data.event_slots.forEach(x=>addSlot(x.date,x.start,x.end))}for(const [k,v]of Object.entries(x.data)){if(k==='risk_options'){document.querySelectorAll('[name=risk_options]').forEach(c=>c.checked=v.includes(c.value))}else if(form.elements[k]){if(form.elements[k].type==='checkbox')form.elements[k].checked=!!v;else form.elements[k].value=v}}}}catch(err){form.classList.add('hidden');message(err.message,true)}}form.onsubmit=async e=>{e.preventDefault();if(!confirm('Confermi invio definitivo? Dopo l’invio non potrai modificare la richiesta con questo link.'))return;if(!validateTax()){form.reportValidity();return}let slots;try{slots=readSlots()}catch(err){message(err.message,true);return}const values={event_slots:slots,event_dates:slots.map(x=>x.date).join(', '),event_time:slots.map(x=>x.date+' '+x.start+'–'+x.end).join('; ')};for(const k of fields){let el=form.elements[k];values[k]=el.value}for(const k of ['participants_athletes','participants_public','children','elderly','disabled'])values[k]=Number(values[k]||0);values.road_closure=values.road_closure==='true';values.risk_options=[...form.querySelectorAll('[name=risk_options]:checked')].map(x=>x.value);values.privacy_ack=form.elements.privacy_ack.checked;values.declaration=form.elements.declaration.checked;try{const r=await fetch('/api/r/'+token,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});if(!r.ok){const j=await r.json();throw Error(typeof j.detail==='string'?j.detail:'Controlla i campi obbligatori')}form.classList.add('hidden');message('Richiesta inviata correttamente. Il Comitato riceverà i dati per la revisione. Conserva questa conferma.')}catch(err){message(err.message,true)}};init();
+const fields=['org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_email','org_pec','event_name','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','additional_notes'];const risks=['Prevista vendita/consumo di alcool','Possibile consumo di droghe','Presenza categorie fragili','Evento ampiamente pubblicizzato','Presenza figure politiche/religiose','Possibili difficoltà nella viabilità','Tensioni socio-politiche','Ambiente acquatico','Palco o ponteggio temporaneo','Presenza di recinzioni','Servizi igienici','Disponibilità acqua','Protezione civile','Vigili del fuoco','Forze dell’ordine'];document.getElementById('risks').innerHTML=risks.map((r,i)=>'<label class="check"><input type="checkbox" name="risk_options" value="'+r+'">'+r+'</label>').join('');function message(m,bad=false){notice.className='notice '+(bad?'err':'good');notice.textContent=m;window.scrollTo({top:0,behavior:'smooth'})}async function init(){try{const r=await fetch('/api/r/'+token);if(!r.ok)throw Error('Link non valido, scaduto o già chiuso');const x=await r.json();if(x.status==='submitted'||x.status==='approved'){form.classList.add('hidden');message('Questa richiesta è già stata inviata e non può essere riutilizzata.');return}form.elements.org_email.value=x.customer_email||'';loadPreviousEvents();if(x.status==='draft'){if(Array.isArray(x.data.event_slots)&&x.data.event_slots.length){slotContainer.replaceChildren();x.data.event_slots.forEach(x=>addSlot(x.date,x.start,x.end))}for(const [k,v]of Object.entries(x.data)){if(k==='risk_options'){document.querySelectorAll('[name=risk_options]').forEach(c=>c.checked=v.includes(c.value))}else if(form.elements[k]){if(form.elements[k].type==='checkbox')form.elements[k].checked=!!v;else form.elements[k].value=v}}}}catch(err){form.classList.add('hidden');message(err.message,true)}}form.onsubmit=async e=>{e.preventDefault();
+ const submit=e.submitter||form.querySelector('[type=submit]');
+ if(submit?.disabled)return;
+if(!confirm('Confermi invio definitivo? Dopo l’invio non potrai modificare la richiesta con questo link.'))return;if(!validateTax()){form.reportValidity();return}let slots;try{slots=readSlots()}catch(err){message(err.message,true);return}const values={event_slots:slots,event_dates:slots.map(x=>x.date).join(', '),event_time:slots.map(x=>x.date+' '+x.start+'–'+x.end).join('; ')};for(const k of fields){let el=form.elements[k];values[k]=el.value}for(const k of ['participants_athletes','participants_public','children','elderly','disabled'])values[k]=Number(values[k]||0);values.road_closure=values.road_closure==='true';values.risk_options=[...form.querySelectorAll('[name=risk_options]:checked')].map(x=>x.value);values.privacy_ack=form.elements.privacy_ack.checked;values.declaration=form.elements.declaration.checked;if(submit){submit.disabled=true;submit.textContent='Invio in corso…'}
+try{const r=await fetch('/api/r/'+encodeURIComponent(token),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});if(!r.ok){
+ const j=await r.json().catch(()=>({}));
+ const details=Array.isArray(j.detail)?j.detail.map(x=>((x.loc||[]).slice(-1)[0]||'Campo')+': '+x.msg).join('; '):j.detail;
+ throw Error(typeof details==='string'&&details?details:'Invio non riuscito: controlla i dati e riprova.');
+}
+const result=await r.json();
+if(result.status!=='submitted')throw Error('Il server non ha confermato l’invio: contatta CRI Venezia.');
+form.classList.add('hidden');
+message(result.mail_status==='failed'?'Richiesta registrata correttamente. La notifica email al Comitato non è riuscita: contatta CRI Venezia al numero 041 982333.':'Richiesta inviata correttamente e registrata dalla CRI. Non devi compilarla nuovamente. Conserva questa conferma.');}catch(err){message('Invio non completato: '+err.message+'. I dati rimangono nel modulo: non ricaricare la pagina.',true)}
+finally{if(submit){submit.disabled=false;submit.textContent='Invia definitivamente la richiesta'}}};init();
