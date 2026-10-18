@@ -30,14 +30,14 @@ def render_excel(template: Path, values: dict) -> bytes:
                     # All mapped cells already exist in the original template.
                     # Replace the cell only: keep existing style and relationships.
                     pattern = re.compile(
-                        r'(<c\\s+[^>]*\\br="' + re.escape(address) +
+                        r'(<c\s+[^>]*\br="' + re.escape(address) +
                         r'"[^>]*)(/>)'
-                        r'|(<c\\s+[^>]*\\br="' + re.escape(address) +
+                        r'|(<c\s+[^>]*\br="' + re.escape(address) +
                         r'"[^>]*>)(.*?)(</c>)', re.DOTALL
                     )
                     def replace(match):
                         attrs = match.group(1) or match.group(3)
-                        attrs = re.sub(r'\\s+t="[^"]*"', '', attrs)
+                        attrs = re.sub(r'\s+t="[^"]*"', '', attrs)
                         text = escape(str(value)[:2000], {'"': '&quot;', "'": '&apos;'})
                         return attrs + ' t="inlineStr"><is><t>' + text + '</t></is></c>'
                     xml, changes = pattern.subn(replace, xml, count=1)
