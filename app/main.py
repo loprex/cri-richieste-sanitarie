@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, model_validator
 from sqlalchemy import create_engine, text, inspect
 from .excel import render_excel
 
@@ -94,7 +94,48 @@ def get_token_record(token):
 
 class Login(BaseModel):password:str
 class Create(BaseModel):customer_email:EmailStr;days:int=Field(default=14,ge=1,le=60)
+def check_vat(number):
+    number=number.strip().upper().removeprefix('IT')
+    if not number:return True
+    if not re.fullmatch(r'[0-9]{11}',number):return False
+    total=0
+    for i,c in enumerate(number[:10]):
+        n=int(c)
+        if i%2:n=n*2-9 if n*2>9 else n*2
+        total+=n
+    return (10-total%10)%10==int(number[-1])
+
+def check_fiscal(code):
+    code=code.strip().upper()
+    if not code:return True
+    if re.fullmatch(r'[0-9]{11}',code):return check_vat(code)
+    if not re.fullmatch(r'[A-Z0-9]{16}',code):return False
+    odds='BAKPLCQDREVOSFTGUHMINJWZYX'
+    even='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    digit_odd=[1,0,5,7,9,13,15,17,19,21]
+    total=0
+    for i,c in enumerate(code[:15]):
+        if i%2:total+=int(c) if c.isdigit() else even.index(c)
+        else:total+=digit_odd[int(c)] if c.isdigit() else odds.index(c)
+    return even[total%26]==code[-1]
+
+class EventSlot(BaseModel):
+    date:str
+    start:str
+    end:str
+    @model_validator(mode='after')
+    def check(self):
+        from datetime import date as _date, time as _time
+        try:
+            _date.fromisoformat(self.date)
+            start=_time.fromisoformat(self.start)
+            end=_time.fromisoformat(self.end)
+        except ValueError:raise ValueError('Data o orario non valido')
+        if end<=start:raise ValueError('Orario di fine successivo a quello di inizio richiesto')
+        return self
+
 class Submission(BaseModel):
+    event_slots:list[EventSlot]=Field(default_factory=list,max_length=60)
     org_name:str=Field(min_length=2,max_length=220)
     org_contact:str=Field(min_length=2,max_length=220)
     org_address:str=Field(min_length=5,max_length=400)
@@ -124,6 +165,17 @@ class Submission(BaseModel):
     additional_notes:str=Field(default='',max_length=1500)
     privacy_ack:bool=False
     declaration:bool=False
+    @model_validator(mode='after')
+    def validate_business_data(self):
+        if self.org_tax_code and not check_fiscal(self.org_tax_code):
+            raise ValueError('Codice fiscale non valido')
+        if self.org_vat and not check_vat(self.org_vat):
+            raise ValueError('Partita IVA non valida')
+        if self.event_slots:
+            self.event_dates=', '.join(slot.date for slot in self.event_slots)
+            self.event_time='; '.join(f'{slot.date} {slot.start}-{slot.end}' for slot in self.event_slots)
+        return self
+
 class Approval(BaseModel):notes:str=Field(default='',max_length=1500)
 class MailSettings(BaseModel):
     enabled:bool=False
