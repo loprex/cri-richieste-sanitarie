@@ -50,6 +50,12 @@ def test_isolation_reset_dates_and_archiving():
     assert maria.post("/r/"+token_url.split("/r/")[1],data={"org_name":"Sample"}).status_code==405
     page=maria.get("/r/"+token_url.split("/r/")[1])
     assert page.status_code==200 and 'method="post"' in page.text and 'id="sendRequest" disabled' in page.text
+    # Old browsers submitting GET query parameters must never save customer PII.
+    leaked_get=maria.get("/r/"+token_url.split("/r/")[1]+"?org_name=Test%20Private",follow_redirects=False)
+    assert leaked_get.status_code==303
+    assert "?org_name=" not in leaked_get.headers["location"]
+    assert maria.get('/api/requests').json()[0]['status']=='pending'
+
     # Archiving permanently revokes the bearer link, including after restore.
     archived=maria.post(f"/api/requests/{request_id}/archive",headers=mh)
     assert archived.status_code==200
