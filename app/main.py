@@ -26,6 +26,9 @@ SESSION_SECRET=os.getenv('SESSION_SECRET','')
 PUBLIC_BASE_URL=os.getenv('PUBLIC_BASE_URL','http://localhost:8000').rstrip('/')
 SECURE=os.getenv('COOKIE_SECURE','true').lower()=='true'
 ADDITIONAL_ADMIN_EMAIL='amministrazione@crivenezia.it'
+# Deletion permission is bound to the original bootstrap account AND its verified email.
+# Other admins may manage accounts but never delete them.
+OWNER_DELETE_EMAIL='giuseppe.lopresti@veneto.cri.it'
 # Fail closed: TEST and staging must not contact the official administration mailbox.
 # Both explicit production environment and opt-in are necessary to reactivate.
 def administration_mail_active()->bool:
@@ -188,7 +191,7 @@ with db() as c:
         c.execute(text("""INSERT INTO audit(request_id,action,created_at)
            VALUES(NULL,:action,:at)"""),
           {'action':'secondary_admin_granted_'+str(secondary['id']),'at':iso()})
-    elif not secondary:
+    elif not secondary and get_setting(c,'designated_admin_deleted','false')!='true':
         # Create a pending, passwordless administrator account only for the
         # explicitly designated mailbox. Admin sends a one-use activation link.
         created=c.execute(text("""INSERT INTO app_users
@@ -228,6 +231,17 @@ def require_admin(req:Request):
     user=require_user(req)
     if user['role']!='admin':raise HTTPException(403,'Solo amministratore')
     return user
+def can_delete_accounts(user)->bool:
+    return bool(user and user.get('role')=='admin'
+        and user.get('username')=='admin'
+        and (user.get('email') or '').strip().casefold()==OWNER_DELETE_EMAIL)
+
+def require_account_deletion_owner(req:Request):
+    user=require_admin(req)
+    if not can_delete_accounts(user):
+        raise HTTPException(403,'Solo l’amministratore principale Lopresti può eliminare account')
+    return user
+
 def require_request_access(req:Request,request_id:int):
     user=require_user(req)
     with db() as c:r=fetchone(c,'SELECT owner_user_id FROM requests WHERE id=:id',{'id':request_id})
@@ -250,6 +264,11 @@ class Login(BaseModel):
     password:str
 class ForgotPassword(BaseModel):
     email:EmailStr
+class DeleteUserRequest(BaseModel):
+    password:str=Field(min_length=1,max_length=256)
+    confirm_email:str=Field(min_length=1,max_length=254)
+    confirmation:str=Field(min_length=7,max_length=7)
+
 class NewOperator(BaseModel):
     email:EmailStr
     display_name:str=Field(min_length=2,max_length=120)
@@ -550,13 +569,15 @@ def login(body:Login,response:Response,request:Request):
     return {'ok':True,'csrf':sign('csrf:'+session_value),'email':fresh['email'],
             'legacy_login':fresh['username'] if not fresh['email'] else None,
             'user_id':fresh['id'],'display_name':fresh['display_name'],
-            'is_admin':fresh['role']=='admin'}
+            'is_admin':fresh['role']=='admin',
+            'can_delete_accounts':can_delete_accounts(fresh)}
 @app.get('/api/session')
 def session(request:Request):
     user=require_user(request)
     return {'ok':True,'csrf':user['csrf'],'email':user['email'],
             'legacy_login':user['username'] if not user['email'] else None,
-            'user_id':user['id'],'display_name':user['display_name'],'is_admin':user['role']=='admin'}
+            'user_id':user['id'],'display_name':user['display_name'],'is_admin':user['role']=='admin',
+            'can_delete_accounts':can_delete_accounts(user)}
 @app.post('/api/logout')
 def logout(request:Request,response:Response):
     require_user(request)
@@ -802,6 +823,45 @@ def set_user_status(id:int,body:OperatorStatus,request:Request):
              {'active':body.active,'version':secrets.token_hex(16),'id':id})
         audit(c,None,('user_enabled_' if body.active else 'user_disabled_')+str(id))
     return {'ok':True}
+
+@app.delete('/api/users/{id}')
+def delete_user(id:int,body:DeleteUserRequest,request:Request):
+    owner=require_account_deletion_owner(request)
+    if owner['id']==id:raise HTTPException(409,'Non puoi eliminare il tuo account principale')
+    if body.confirmation!='ELIMINA':
+        raise HTTPException(422,'Digitare ELIMINA per confermare')
+    with db() as c:
+        administrator=fetchone(c,"""SELECT id,password_hash FROM app_users
+            WHERE id=:id AND active=TRUE""",{'id':owner['id']})
+        if not administrator or not verify_password(body.password,administrator['password_hash']):
+            raise HTTPException(403,'Password amministratore non corretta')
+        victim=fetchone(c,'SELECT id,email,username FROM app_users WHERE id=:id',{'id':id})
+        if not victim:raise HTTPException(404,'Account non trovato')
+        if victim['username']=='admin':
+            raise HTTPException(409,'L’account amministratore principale non può essere eliminato')
+        expected=(victim['email'] or victim['username'] or '').strip().casefold()
+        if body.confirm_email.strip().casefold()!=expected:
+            raise HTTPException(422,'Conferma email/account non corrispondente')
+        # Preserve every clinical/document record and its original owner_user_id
+        # as an immutable historical attribution. No user IDs are reused by the DB.
+        # Pending invitation links are revoked so an orphaned request cannot be
+        # finalized by a recipient after its operator's account was deleted.
+        pending=c.execute(text("""SELECT id FROM requests WHERE owner_user_id=:id
+          AND status IN ('pending','draft') AND archived_at IS NULL"""),{'id':id}).scalars().all()
+        for request_id in pending:
+            c.execute(text('UPDATE requests SET archived_at=:at WHERE id=:id'),
+                      {'at':iso(),'id':request_id})
+            audit(c,request_id,'invitation_revoked_user_deleted_'+str(id))
+        # The special CRI admin mailbox is auto-provisioned on startup, so record
+        # an explicit owner's deletion decision to prevent accidental recreation.
+        if (victim['email'] or '').strip().casefold()==ADDITIONAL_ADMIN_EMAIL:
+            set_setting(c,'designated_admin_deleted','true')
+        removed=c.execute(text('DELETE FROM app_users WHERE id=:id'),{'id':id})
+        if removed.rowcount!=1:raise HTTPException(409,'Account già eliminato')
+        audit(c,None,'account_deleted_by_'+str(owner['id'])+'_user_'+str(id))
+    return {'ok':True,'deleted_user_id':id,
+            'revoked_pending_invitations':len(pending),
+            'historical_requests_preserved':True}
 
 @app.post('/api/users/{id}/unlock')
 def unlock_user(id:int,request:Request):
