@@ -1,11 +1,14 @@
 import os, secrets, hashlib, hmac, json, re, io, smtplib, ssl, html, logging, threading, time
+from urllib.parse import urlencode
+from urllib.request import Request as UpstreamRequest, urlopen
+from urllib.error import URLError, HTTPError
 from email.message import EmailMessage
 from email.utils import formataddr
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from contextlib import contextmanager
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, Query
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr, model_validator
@@ -580,6 +583,61 @@ def previous_events(token:str):
         results.append({'id':item['id'],'name':data['event_name'],
                         'data':{k:data[k] for k in REUSABLE_EVENT_FIELDS if k in data}})
     return results
+
+# The user's token is validated locally and never sent to the geocoding provider.
+_ADDRESS_RATE_LOCK=threading.Lock()
+_ADDRESS_LOOKUPS={}
+@app.get('/api/r/{token}/address-suggestions')
+def address_suggestions(token:str, q:str=Query(min_length=3,max_length=110)):
+    get_token_record(token)
+    query=' '.join(q.strip().split())
+    if len(query)<3:return {'suggestions':[]}
+    current=time.monotonic()
+    key=digest(token)
+    with _ADDRESS_RATE_LOCK:
+        # Bound storage even if many separate links are used.
+        if len(_ADDRESS_LOOKUPS)>800:
+            _ADDRESS_LOOKUPS.clear()
+        times=[v for v in _ADDRESS_LOOKUPS.get(key,[]) if current-v<60]
+        if len(times)>=30:
+            raise HTTPException(429,'Troppe ricerche indirizzo: attendi un minuto')
+        times.append(current)
+        _ADDRESS_LOOKUPS[key]=times
+    url='https://photon.komoot.io/api/?'+urlencode(
+        {'q':query,'lang':'it','limit':8})
+    req=UpstreamRequest(url,headers={'Accept':'application/json',
+        'User-Agent':'CRI-Venezia-Address-Form/1.0'})
+    try:
+        with urlopen(req,timeout=4) as remote:
+            if remote.status!=200:
+                return {'suggestions':[],'available':False}
+            response=json.loads(remote.read(150000))
+    except (URLError,HTTPError,OSError,ValueError,TimeoutError):
+        logger.warning('Geocoding provider temporarily unavailable')
+        return {'suggestions':[],'available':False}
+    addresses=[]
+    seen=set()
+    for feature in (response.get('features') or [])[:12]:
+        p=feature.get('properties') or {}
+        if (p.get('countrycode') or '').lower() not in ('it',''):
+            continue
+        street=p.get('street') or ''
+        name=p.get('name') or ''
+        number=str(p.get('housenumber') or '')
+        main=' '.join(filter(None,[street,number])) if street else name
+        locality=p.get('city') or p.get('locality') or p.get('county') or ''
+        cap=str(p.get('postcode') or '')
+        region=p.get('state') or ''
+        chunks=[main,' '.join(filter(None,[cap,locality])),region]
+        address=', '.join(str(x) for x in chunks if x)
+        if name and street and name.casefold()!=street.casefold():
+            address=name+' — '+address
+        address=address[:350]
+        if not address or address.casefold() in seen:continue
+        seen.add(address.casefold())
+        addresses.append(address)
+        if len(addresses)>=6:break
+    return {'suggestions':addresses,'available':True}
 
 @app.get('/api/r/{token}')
 def token_info(token:str):
