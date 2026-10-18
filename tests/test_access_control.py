@@ -129,9 +129,18 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
         def __exit__(self,*args):pass
         def read(self,n):
             return b'{"features":[{"properties":{"street":"Via Roma","housenumber":"10","postcode":"30100","city":"Venezia","state":"Veneto","countrycode":"IT"}}]}'
-    monkeypatch.setattr(backend,"urlopen",lambda *args,**kwargs:FakeResponse())
+    requested_urls=[]
+    def mock_geocoder(request,timeout):
+        requested_urls.append(request.full_url)
+        return FakeResponse()
+    monkeypatch.setattr(backend,"urlopen",mock_geocoder)
     matches=maria.get(f"/api/r/{token}/address-suggestions?q=Via%20Roma").json()
     assert matches["suggestions"]==["Via Roma 10, 30100 Venezia, Veneto"]
+    from urllib.parse import urlsplit,parse_qs
+    query_params=parse_qs(urlsplit(requested_urls[0]).query)
+    assert query_params["q"]==["Via Roma"]
+    assert query_params["limit"]==["8"]
+    assert "lang" not in query_params  # Some Photon demo deployments reject lang=it with HTTP 400.
     assert maria.get(f"/api/r/{token}/address-suggestions?q=AB").status_code==422
     # Photon errors are classified without exposing queries or token values.
     def reject_with_rate_limit(*args,**kwargs):
