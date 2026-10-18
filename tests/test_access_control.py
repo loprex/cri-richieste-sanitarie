@@ -43,6 +43,13 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     monkeypatch.setenv("SMTP_FROM","sender@example.com")
     monkeypatch.setenv("SMTP_USER","sender@example.com")
     admin,ah=login("admin@example.com",os.environ["ADMIN_PASSWORD"])
+    second_admin=next(u for u in admin.get("/api/users").json()
+        if u["email"]=="amministrazione@crivenezia.it")
+    assert second_admin["role"]=="admin"
+    assert second_admin["password_setup_required"] is True
+    # Designated admin has no initial password until activated via its own mailbox.
+    assert TestClient(app).post("/api/login",json={
+      "email":"amministrazione@crivenezia.it","password":"guess-password"}).status_code==401
     for email,name in (("maria@example.com","Maria"),("luca@example.com","Luca")):
         created=admin.post("/api/users",headers=ah,json={"email":email,"display_name":name})
         assert created.status_code==200,created.text
@@ -95,6 +102,14 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
        "enabled":True,"recipients":"office@example.com;admin@example.com",
        "subject":"Piano Sanitario {protocol} - {event}","body":"Evento {event} {protocol_date}"})
     assert settings.status_code==200,settings.text
+    test_email=admin.post("/api/settings/mail/test",headers=ah,json={
+       "to":"office@example.com"})
+    assert test_email.status_code==200,test_email.text
+    assert test_email.json()["status"]=="accepted_by_smtp"
+    assert sent[-1]["To"]=="office@example.com"
+    forbidden=admin.post("/api/settings/mail/test",headers=ah,json={
+       "to":"unknown@example.com"})
+    assert forbidden.status_code==403
     data={
        "org_name":"Ente esempio","org_contact":"Referente Esempio",
        "org_address":"Via Roma 10 Venezia","org_phone":"0410000000",
@@ -129,6 +144,12 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     assert rec=={"admin@example.com","office@example.com","maria@example.com"}
     assert "organizzatore@example.com" not in rec
     assert filename in [p.get_filename() for p in email.iter_attachments()]
+    deep_link="/?request="+str(req_id)
+    assert deep_link in email.get_body(preferencelist=('plain',)).get_content()
+    assert deep_link in email.get_body(preferencelist=('html',)).get_content()
+    assert "Piano Sanitario Excel" in email.get_body(preferencelist=('html',)).get_content()
+    # Delivery to internal recipients must not include the original organizer.
+    assert "organizzatore@example.com" not in rec
     assert maria.put("/api/r/"+token,json=data).status_code==410
 
     # New-event vs copy-previous choice: only the same recipient email and
