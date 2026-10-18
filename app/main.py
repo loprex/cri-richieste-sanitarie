@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr, model_validator
 from sqlalchemy import create_engine, text, inspect
@@ -321,7 +321,22 @@ def create(request:Request,body:Create):
     return {'id':id,'url':link,'expires_in_days':body.days,'invitation_status':invitation_status}
 @app.get('/r/{token}')
 def external(token:str):
-    get_token_record(token);return FileResponse(BASE/'static'/'form.html')
+    try:
+        get_token_record(token)
+    except HTTPException as exc:
+        if exc.status_code in (404, 410):
+            return HTMLResponse("""<!doctype html><html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Collegamento non disponibile | CRI Venezia</title>
+<link rel="stylesheet" href="/static/style.css"></head><body>
+<header><div class="mark">CRI</div><div><div class="brand">Croce Rossa Italiana – Comitato di Venezia</div></div></header>
+<main><section class="panel" role="alert">
+<h1>Il link è scaduto oppure è stato revocato da CRI Venezia</h1>
+<p>Contatta <strong>CRI VENEZIA</strong> al numero
+<a href="tel:+39041982333"><strong>041 982333</strong></a>.</p>
+</section></main></body></html>""",status_code=410)
+        raise
+    return FileResponse(BASE/'static'/'form.html')
 # Reuse event-only information from completed requests sent to the same email.
 # An invitation token grants access solely to that mailbox's historical EVENT fields.
 REUSABLE_EVENT_FIELDS=('event_name','event_place','event_description','reference_name',
