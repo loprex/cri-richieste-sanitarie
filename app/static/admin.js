@@ -79,7 +79,7 @@ async function loadUsers(){
  if(!currentUser.is_admin)return;
  try{
   const users=await api('/users');
-  $('usersList').innerHTML=users.map(u=>'<tr><td><b>'+esc(u.display_name)+'</b><div class="muted">'+esc(u.email||'Email da configurare (accesso temporaneo: '+u.username+')')+'</div><input type="email" class="userEmail" data-user="'+u.id+'" value="'+esc(u.email||'')+'" placeholder="email@cri.it" aria-label="Email per '+esc(u.display_name)+'"><button type="button" class="secondary saveEmail" data-user="'+u.id+'">Salva email</button></td><td>'+esc(u.role==='admin'?'Amministratore':'Operatore')+'</td><td>'+esc(u.active?'Attivo':'Disattivato')+'</td><td><input type="password" class="resetPassword" data-user="'+u.id+'" autocomplete="new-password" minlength="12" placeholder="Nuova password (min. 12)" aria-label="Password per '+esc(u.display_name)+'"><button type="button" class="secondary resetButton" data-user="'+u.id+'">Reimposta</button></td><td>'+(u.role==='admin'?'—':'<button type="button" class="secondary statusButton" data-user="'+u.id+'" data-active="'+String(u.active)+'">'+(u.active?'Disattiva':'Riattiva')+'</button>')+'</td></tr>').join('');
+  $('usersList').innerHTML=users.map(u=>'<tr><td><b>'+esc(u.display_name)+'</b><div class="muted">'+esc(u.email||'Email da configurare (accesso temporaneo: '+u.username+')')+'</div><input type="email" class="userEmail" data-user="'+u.id+'" value="'+esc(u.email||'')+'" placeholder="email@cri.it" aria-label="Email per '+esc(u.display_name)+'"><button type="button" class="secondary saveEmail" data-user="'+u.id+'">Salva email</button></td><td>'+esc(u.role==='admin'?'Amministratore':'Operatore')+'</td><td>'+esc(u.password_setup_required?'In attesa di password':u.active?'Attivo':'Disattivato')+'</td><td><button type="button" class="secondary sendSetup" data-user="'+u.id+'">'+(u.password_setup_required?'Reinvia link':'Invia reset password')+'</button></td><td>'+(u.role==='admin'?'—':'<button type="button" class="secondary statusButton" data-user="'+u.id+'" data-active="'+String(u.active)+'">'+(u.active?'Disattiva':'Riattiva')+'</button>')+'</td></tr>').join('');
   document.querySelectorAll('.saveEmail').forEach(b=>b.onclick=async()=>{
    const id=Number(b.dataset.user),input=document.querySelector('.userEmail[data-user="'+id+'"]');
    if(!input||!input.validity.valid||!input.value.trim()){msg('Indica un indirizzo email valido.',true);return}
@@ -87,21 +87,20 @@ async function loadUsers(){
    try{
     await api('/users/'+id+'/email','PUT',{email:input.value.trim()});
     const current=users.find(u=>u.id===id);
-    msg('Email operatore aggiornata.');
-    if(current&&current.id===currentUser.id){location.reload();return}
+    msg('Email operatore aggiornata.');if(current&&current.id===currentUser.id){location.reload();return}
     loadUsers();
    }catch(err){msg(err.message,true)}
   });
-  document.querySelectorAll('.resetButton').forEach(b=>b.onclick=async()=>{
-   const id=Number(b.dataset.user),input=document.querySelector('.resetPassword[data-user="'+id+'"]');
-   if(!input||input.value.length<12){msg('La password deve avere almeno 12 caratteri.',true);return}
-   if(!confirm('Reimpostare la password? Le sessioni esistenti saranno revocate.'))return;
+  document.querySelectorAll('.sendSetup').forEach(b=>b.onclick=async()=>{
+   const id=Number(b.dataset.user),user=users.find(u=>u.id===id);
+   if(!user?.email){msg('Configura prima l’email dell’operatore.',true);return}
+   if(!confirm('Inviare un nuovo link via email? Il link precedente e la password attuale, se presente, saranno revocati.'))return;
+   b.disabled=true;
    try{
-    await api('/users/'+id+'/password','PUT',{password:input.value});input.value='';
-    msg('Password aggiornata. Comunicala con un canale riservato.');
-    const target=users.find(u=>u.id===id);
-    if(target&&target.id===currentUser.id){location.reload();return}
-   }catch(err){msg(err.message,true)}
+    const result=await api('/users/'+id+'/send-setup','POST',{});
+    msg(result.activation_status==='sent'?'Link inviato all’operatore.':'Account in attesa: invio email non riuscito. Verifica SMTP e utilizza Reinvia link.',result.activation_status!=='sent');
+    loadUsers();
+   }catch(err){msg(err.message,true)}finally{b.disabled=false}
   });
   document.querySelectorAll('.statusButton').forEach(b=>b.onclick=async()=>{
    const id=Number(b.dataset.user),active=b.dataset.active==='true';
@@ -116,8 +115,10 @@ $('newUserForm').onsubmit=async e=>{
  const button=$('newUserSubmit');if(button.disabled)return;
  button.disabled=true;
  try{
-  await api('/users','POST',{email:$('newEmail').value.trim(),display_name:$('newDisplayName').value,password:$('newUserPassword').value});
-  $('newUserForm').reset();msg('Operatore creato. Comunica la password iniziale tramite un canale riservato.');loadUsers();
+  const result=await api('/users','POST',{email:$('newEmail').value.trim(),display_name:$('newDisplayName').value});
+  $('newUserForm').reset();
+  msg(result.activation_status==='sent'?'Operatore creato: link di attivazione inviato via email (48 ore).':'Operatore creato, ma il link non è stato recapitato. Controlla SMTP e usa Reinvia link.',result.activation_status!=='sent');
+  loadUsers();
  }catch(err){msg(err.message,true)}finally{button.disabled=false}
 };
 
