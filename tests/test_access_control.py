@@ -28,6 +28,17 @@ def test_public_routes_present():
     assert c.get("/").status_code==200
     assert c.get("/health").json()=={"status":"ok"}
 
+def test_single_prior_event_selection_markup():
+    # Client may select fields freely, but never combine two old events.
+    from pathlib import Path
+    form_js=(Path(backend.__file__).parent/"static"/"form.js").read_text()
+    form_html=(Path(backend.__file__).parent/"static"/"form.html").read_text()
+    assert "input.type='radio';input.name='previousEventChoice'" in form_js
+    assert "document.querySelector('input[name=\"previousEventChoice\"]:checked')" in form_js
+    assert "for(const id of ids)" not in form_js
+    assert "input.type='checkbox';input.className='reuseField'" in form_js
+    assert "Seleziona un solo evento" in form_html
+
 def test_user_activation_and_case_lifecycle(monkeypatch):
     sent=[]
     class FakeSMTP:
