@@ -105,4 +105,5 @@ $('newUserForm').onsubmit=async e=>{
  }catch(err){msg(err.message,true)}
 };
 
+for(const name of ['loginSubmit','createRequestButton','mailSubmit','newUserSubmit']) $(name).disabled=false;
 init();
