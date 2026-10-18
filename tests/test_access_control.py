@@ -22,6 +22,14 @@ def login(email,password):
     assert response.status_code==200,response.text
     return client,{"x-cri-csrf":response.json()["csrf"]}
 
+def test_public_routes_present():
+    client=TestClient(app)
+    home=client.get("/")
+    assert home.status_code==200,home.text
+    assert "Accesso operatori CRI" in home.text
+    assert client.get("/health").json()=={"status":"ok"}
+
+
 def test_multiuser_protocol_and_internal_recipients(monkeypatch):
     admin,ah=login("admin@example.com",os.environ["ADMIN_PASSWORD"])
     for email,name in (("maria@example.com","Maria"),("luca@example.com","Luca")):
