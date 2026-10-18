@@ -148,8 +148,8 @@ class Submission(BaseModel):
     org_email:EmailStr
     org_pec:str=Field(default='',max_length=254)
     event_name:str=Field(min_length=3,max_length=250)
-    event_dates:str=Field(min_length=8,max_length=120)
-    event_time:str=Field(min_length=3,max_length=120)
+    event_dates:str=Field(min_length=8,max_length=4000)
+    event_time:str=Field(min_length=3,max_length=5000)
     event_place:str=Field(min_length=5,max_length=400)
     event_description:str=Field(min_length=10,max_length=2000)
     reference_name:str=Field(min_length=2,max_length=180)
@@ -375,7 +375,18 @@ def save(token:str,body:Submission,draft:bool=False):
         if result.rowcount!=1:raise HTTPException(409,'Richiesta già inviata')
         audit(c,r['id'],'saved_draft' if draft else 'submitted')
     mail='not_sent'
-    if not draft:mail=mail_request(r['id'],body.model_dump())
+    if not draft:
+        try:
+            mail=mail_request(r['id'],body.model_dump())
+        except Exception as exc:
+            # The request is already committed: failed document/email generation
+            # must not make the organizer think they need to submit again.
+            logger.error('Post-submission notification failed request=%d type=%s',r['id'],type(exc).__name__)
+            with db() as c:
+                c.execute(text('UPDATE requests SET mail_error=:err WHERE id=:id'),
+                          {'err':type(exc).__name__,'id':r['id']})
+                audit(c,r['id'],'mail_failed')
+            mail='failed'
     return {'ok':True,'status':'draft' if draft else 'submitted','mail_status':mail}
 @app.get('/api/requests')
 def list_requests(request:Request, view:str='all'):
