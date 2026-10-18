@@ -364,6 +364,20 @@ def mail_request(id,request_data,force=False):
         audit(c,id,'mail_sent')
     return 'sent'
 
+@app.get('/')
+def home():
+    return FileResponse(BASE/'static'/'index.html',
+        headers={'Cache-Control':'no-store','Referrer-Policy':'same-origin'})
+
+@app.get('/health')
+def health():
+    try:
+        with db() as conn:
+            conn.execute(text('SELECT 1')).scalar_one()
+    except Exception:
+        raise HTTPException(503,'Database non disponibile')
+    return {'status':'ok'}
+
 @app.post('/api/login')
 def login(body:Login,response:Response,request:Request):
     ip=request.client.host if request.client else 'unknown'
