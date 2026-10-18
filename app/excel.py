@@ -36,7 +36,7 @@ def render_excel(template: Path, values: dict) -> bytes:
                         r'"[^>]*>)(.*?)(</c>)', re.DOTALL
                     )
                     def replace(match):
-                        attrs = match.group(1) or match.group(3)
+                        attrs = (match.group(1) or match.group(3)).rstrip('>')
                         attrs = re.sub(r'\s+t="[^"]*"', '', attrs)
                         text = escape(str(value)[:2000], {'"': '&quot;', "'": '&apos;'})
                         return attrs + ' t="inlineStr"><is><t>' + text + '</t></is></c>'
