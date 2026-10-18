@@ -328,7 +328,7 @@ def mail_request(id,request_data,force=False):
     def fmt(template):
         for key,value in label.items():template=template.replace('{'+key+'}',str(value))
         return template
-    message_subject=fmt(subject)
+    message_subject=re.sub(r'[\r\n]+',' ',fmt(subject))
     if protocol not in message_subject:message_subject+=' - '+protocol
     msg=EmailMessage()
     msg['From']=formataddr(('Croce Rossa Italiana - Comitato di Venezia',sender))
@@ -554,8 +554,10 @@ def previous_events(token:str):
     with db() as c:
         previous=c.execute(text("""SELECT id,payload FROM requests
             WHERE LOWER(customer_email)=:email AND id<>:id
-            AND archived_at IS NOT NULL AND status IN ('submitted','approved') ORDER BY id DESC LIMIT 30"""),
-            {'email':current['customer_email'].lower(),'id':current['id']}).mappings().all()
+            AND archived_at IS NOT NULL AND status IN ('submitted','approved')
+            AND (owner_user_id=:owner OR (:owner IS NULL AND owner_user_id IS NULL))
+            ORDER BY id DESC LIMIT 30"""),
+            {'email':current['customer_email'].lower(),'id':current['id'],'owner':current.get('owner_user_id')}).mappings().all()
     results=[]
     for item in previous:
         data=json.loads(item['payload'])
