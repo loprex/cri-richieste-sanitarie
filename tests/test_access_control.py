@@ -37,11 +37,11 @@ def test_user_table_shows_all_controls_and_last_login():
     assert "lastLoginHtml(u.last_login_at)" in js
     assert "userManageButton" not in js
     assert "user-details-row" not in js
-    assert "class=\\"userEmail\\"" in js
+    assert 'class="userEmail"' in js
     assert "saveRole" in js and "saveEmail" in js
     assert "sendSetup" in js and "statusButton" in js
     assert "deleteAccountButton" in js
-    assert "id=\\"usersList\\"" in html
+    assert 'id="usersList"' in html
 
 def test_single_prior_event_selection_markup():
     # Client may select fields freely, but never combine two old events.
