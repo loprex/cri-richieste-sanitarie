@@ -151,8 +151,9 @@ for(const name of ['org_tax_code','org_vat']){
 }
 // Suggestions are served by our backend so cross-origin browser failures never
 // break the form. User selection is optional and keyboard accessible.
-function enableAddressAutocomplete(input, list){
-  let controller=null,timer=null,options=[],active=-1;
+function enableAddressAutocomplete(input, list, status){
+  let controller=null,timer=null,options=[],active=-1,serial=0;
+  const report=message=>{status.textContent=message};
   const show=items=>{
     list.replaceChildren();options=items;active=-1;
     for(let i=0;i<items.length;i++){
@@ -170,28 +171,48 @@ function enableAddressAutocomplete(input, list){
     if(!options.length)return;
     active=(idx+options.length)%options.length;
     [...list.children].forEach((button,i)=>{
-       button.classList.toggle('active',i===active);
-       button.setAttribute('aria-selected',String(i===active));
+      button.classList.toggle('active',i===active);
+      button.setAttribute('aria-selected',String(i===active));
     });
   };
   const select=idx=>{
-    input.value=options[idx];close();input.focus();
-    input.dispatchEvent(new Event('change',{bubbles:true}));
+    input.value=options[idx];close();report('Indirizzo selezionato. Puoi modificarlo se necessario.');
+    input.focus();input.dispatchEvent(new Event('change',{bubbles:true}));
   };
   input.addEventListener('input',()=>{
-    clearTimeout(timer);if(controller)controller.abort();close();
+    clearTimeout(timer);if(controller)controller.abort();serial++;close();
     const q=input.value.trim();
-    if(q.length<3)return;
+    if(q.length<3){report('');return}
+    report('Ricerca indirizzi in corso…');
+    const thisSearch=serial;
     timer=setTimeout(async()=>{
       controller=new AbortController();
       try{
         const response=await fetch('/api/r/'+encodeURIComponent(token)+
-          '/address-suggestions?q='+encodeURIComponent(q),{signal:controller.signal,cache:'no-store'});
-        if(!response.ok)return;
+          '/address-suggestions?q='+encodeURIComponent(q),{
+          signal:controller.signal,cache:'no-store'});
+        if(thisSearch!==serial||input.value.trim()!==q)return;
+        if(response.status===429){
+          report('Troppe ricerche ravvicinate. Attendi un minuto oppure inserisci l’indirizzo manualmente.');
+          return;
+        }
+        if(!response.ok)throw Error('Servizio non disponibile');
         const data=await response.json();
-        if(input.value.trim()!==q)return;
-        show(Array.isArray(data.suggestions)?data.suggestions:[]);
-      }catch(error){if(error.name!=='AbortError')close()}
+        if(thisSearch!==serial||input.value.trim()!==q)return;
+        if(data.available===false){
+          report('Il servizio indirizzi non è momentaneamente disponibile. Puoi inserire l’indirizzo manualmente.');
+          return;
+        }
+        const suggestions=Array.isArray(data.suggestions)?data.suggestions:[];
+        show(suggestions);
+        report(suggestions.length
+          ?suggestions.length+' suggerimenti trovati. Selezionane uno o continua a scrivere.'
+          :'Nessun indirizzo trovato. Prova ad aggiungere la città oppure inserisci l’indirizzo manualmente.');
+      }catch(error){
+        if(thisSearch===serial&&error.name!=='AbortError'){
+          close();report('Impossibile caricare i suggerimenti. Puoi comunque compilare l’indirizzo manualmente.');
+        }
+      }
     },500);
   });
   input.addEventListener('keydown',e=>{
@@ -199,12 +220,16 @@ function enableAddressAutocomplete(input, list){
     if(e.key==='ArrowDown'){e.preventDefault();highlight(active+1)}
     else if(e.key==='ArrowUp'){e.preventDefault();highlight(active-1)}
     else if(e.key==='Enter'&&active>=0){e.preventDefault();select(active)}
-    else if(e.key==='Escape'){close()}
+    else if(e.key==='Escape'){close();report('')}
   });
   input.addEventListener('blur',()=>setTimeout(close,150));
 }
-enableAddressAutocomplete(form.elements.org_address,document.getElementById('orgAddressSuggestions'));
-enableAddressAutocomplete(form.elements.event_place,document.getElementById('placeSuggestions'));
+enableAddressAutocomplete(form.elements.org_address,
+  document.getElementById('orgAddressSuggestions'),
+  document.getElementById('orgAddressStatus'));
+enableAddressAutocomplete(form.elements.event_place,
+  document.getElementById('placeSuggestions'),
+  document.getElementById('placeStatus'));
 const fields=['org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_email','org_pec' ,'event_name','event_city','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','additional_notes'];const risks=['Prevista vendita/consumo di alcool','Possibile consumo di droghe','Presenza categorie fragili','Evento ampiamente pubblicizzato','Presenza figure politiche/religiose','Possibili difficoltà nella viabilità','Tensioni socio-politiche','Ambiente acquatico','Palco o ponteggio temporaneo','Presenza di recinzioni','Servizi igienici','Disponibilità acqua','Protezione civile','Vigili del fuoco','Forze dell’ordine'];document.getElementById('risks').innerHTML=risks.map((r,i)=>'<label class="check"><input type="checkbox" name="risk_options" value="'+r+'">'+r+'</label>').join('');function message(m,bad=false){notice.className='notice '+(bad?'err':'good');notice.textContent=m;window.scrollTo({top:0,behavior:'smooth'})}async function init(){try{const r=await fetch('/api/r/'+token);if(!r.ok)throw Error('Link non valido, scaduto o già chiuso');const x=await r.json();if(x.status==='submitted'||x.status==='approved'){form.classList.add('hidden');message('Questa richiesta è già stata inviata e non può essere riutilizzata.');return}form.elements.org_email.value=x.customer_email||'';form.elements.event_name.value=x.event_name||'';form.elements.event_city.value=x.event_city||'';loadPreviousEvents();if(x.status==='draft'){if(Array.isArray(x.data.event_slots)&&x.data.event_slots.length){slotContainer.replaceChildren();x.data.event_slots.forEach(x=>addSlot(x.date,x.start,x.end))}for(const [k,v]of Object.entries(x.data)){if(k==='risk_options'){document.querySelectorAll('[name=risk_options]').forEach(c=>c.checked=v.includes(c.value))}else if(form.elements[k]){if(form.elements[k].type==='checkbox')form.elements[k].checked=!!v;else form.elements[k].value=v}}}}catch(err){form.classList.add('hidden');message(err.message,true)}}form.onsubmit=async e=>{e.preventDefault();
  const submit=e.submitter||form.querySelector('[type=submit]');
  if(submit?.disabled)return;
