@@ -1,6 +1,6 @@
 const token=location.pathname.split('/').pop(),notice=document.getElementById('notice'),form=document.getElementById('form');
 let previousEvents=[];
-const reuseNames={event_name:'Nome evento',event_place:'Luogo',event_description:'Descrizione',reference_name:'Referente',reference_phone:'Telefono referente',event_type:'Tipo evento',recurrence:'Frequenza',location_type:'Caratteristiche del luogo',road_closure:'Modifica viabilità',participants_athletes:'Atleti',participants_public:'Pubblico',children:'Bambini',elderly:'Anziani',disabled:'Persone con disabilità',risk_options:'Fattori di rischio',additional_notes:'Altre note'};
+const reuseNames={event_name:'Nome evento',event_place:'Luogo',event_description:'Descrizione',reference_name:'Referente',reference_phone:'Telefono referente',event_type:'Tipo evento',recurrence:'Frequenza',location_type:'Caratteristiche del luogo',road_closure:'Modifica viabilità',participants_athletes:'Partecipanti attivi',participants_public:'Pubblico',children:'Bambini',elderly:'Anziani',disabled:'Persone con disabilità',risk_options:'Fattori di rischio',additional_notes:'Altre note'};
 async function loadPreviousEvents(){
  try{
   const response=await fetch('/api/r/'+encodeURIComponent(token)+'/previous-events');
@@ -76,24 +76,62 @@ for(const name of ['org_tax_code','org_vat']){
   document.getElementById(name==='org_tax_code'?'cfMessage':'vatMessage').textContent='';
  });
 }
-let placeController=null,placeTimer=null;
-const placeInput=form.elements.event_place,suggestions=document.getElementById('placeSuggestions');
-placeInput.addEventListener('input',()=>{
- clearTimeout(placeTimer);if(placeController)placeController.abort();suggestions.replaceChildren();
- const query=placeInput.value.trim();if(query.length<3)return;
- placeTimer=setTimeout(async()=>{
-  placeController=new AbortController();
-  try{
-   const response=await fetch('https://photon.komoot.io/api/?limit=5&lang=it&q='+encodeURIComponent(query),{signal:placeController.signal});
-   if(!response.ok)return;
-   const body=await response.json();suggestions.replaceChildren();
-   for(const feature of (body.features||[])){
-    const p=feature.properties||{}, address=[p.name,p.street,p.housenumber,p.postcode,p.city,p.state,p.country].filter(Boolean).join(', ');
-    if(!address)continue;const button=document.createElement('button');button.type='button';button.className='secondary';button.style.cssText='display:block;width:100%;margin:4px 0;text-align:left';button.textContent=address;button.onclick=()=>{placeInput.value=address;suggestions.replaceChildren()};suggestions.appendChild(button);
-   }
-  }catch(e){if(e.name!=='AbortError')suggestions.replaceChildren()}
- },450);
-});
+// Suggestions are served by our backend so cross-origin browser failures never
+// break the form. User selection is optional and keyboard accessible.
+function enableAddressAutocomplete(input, list){
+  let controller=null,timer=null,options=[],active=-1;
+  const show=items=>{
+    list.replaceChildren();options=items;active=-1;
+    for(let i=0;i<items.length;i++){
+      const btn=document.createElement('button');
+      btn.type='button';btn.className='address-option';btn.setAttribute('role','option');
+      btn.setAttribute('aria-selected','false');btn.textContent=items[i];
+      btn.addEventListener('mousedown',e=>e.preventDefault());
+      btn.addEventListener('click',()=>select(i));list.appendChild(btn);
+    }
+    list.classList.toggle('hidden',!items.length);
+    input.setAttribute('aria-expanded',String(!!items.length));
+  };
+  const close=()=>show([]);
+  const highlight=idx=>{
+    if(!options.length)return;
+    active=(idx+options.length)%options.length;
+    [...list.children].forEach((button,i)=>{
+       button.classList.toggle('active',i===active);
+       button.setAttribute('aria-selected',String(i===active));
+    });
+  };
+  const select=idx=>{
+    input.value=options[idx];close();input.focus();
+    input.dispatchEvent(new Event('change',{bubbles:true}));
+  };
+  input.addEventListener('input',()=>{
+    clearTimeout(timer);if(controller)controller.abort();close();
+    const q=input.value.trim();
+    if(q.length<3)return;
+    timer=setTimeout(async()=>{
+      controller=new AbortController();
+      try{
+        const response=await fetch('/api/r/'+encodeURIComponent(token)+
+          '/address-suggestions?q='+encodeURIComponent(q),{signal:controller.signal,cache:'no-store'});
+        if(!response.ok)return;
+        const data=await response.json();
+        if(input.value.trim()!==q)return;
+        show(Array.isArray(data.suggestions)?data.suggestions:[]);
+      }catch(error){if(error.name!=='AbortError')close()}
+    },500);
+  });
+  input.addEventListener('keydown',e=>{
+    if(!options.length)return;
+    if(e.key==='ArrowDown'){e.preventDefault();highlight(active+1)}
+    else if(e.key==='ArrowUp'){e.preventDefault();highlight(active-1)}
+    else if(e.key==='Enter'&&active>=0){e.preventDefault();select(active)}
+    else if(e.key==='Escape'){close()}
+  });
+  input.addEventListener('blur',()=>setTimeout(close,150));
+}
+enableAddressAutocomplete(form.elements.org_address,document.getElementById('orgAddressSuggestions'));
+enableAddressAutocomplete(form.elements.event_place,document.getElementById('placeSuggestions'));
 const fields=['org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_email','org_pec' ,'event_name','event_city','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','additional_notes'];const risks=['Prevista vendita/consumo di alcool','Possibile consumo di droghe','Presenza categorie fragili','Evento ampiamente pubblicizzato','Presenza figure politiche/religiose','Possibili difficoltà nella viabilità','Tensioni socio-politiche','Ambiente acquatico','Palco o ponteggio temporaneo','Presenza di recinzioni','Servizi igienici','Disponibilità acqua','Protezione civile','Vigili del fuoco','Forze dell’ordine'];document.getElementById('risks').innerHTML=risks.map((r,i)=>'<label class="check"><input type="checkbox" name="risk_options" value="'+r+'">'+r+'</label>').join('');function message(m,bad=false){notice.className='notice '+(bad?'err':'good');notice.textContent=m;window.scrollTo({top:0,behavior:'smooth'})}async function init(){try{const r=await fetch('/api/r/'+token);if(!r.ok)throw Error('Link non valido, scaduto o già chiuso');const x=await r.json();if(x.status==='submitted'||x.status==='approved'){form.classList.add('hidden');message('Questa richiesta è già stata inviata e non può essere riutilizzata.');return}form.elements.org_email.value=x.customer_email||'';form.elements.event_name.value=x.event_name||'';form.elements.event_city.value=x.event_city||'';loadPreviousEvents();if(x.status==='draft'){if(Array.isArray(x.data.event_slots)&&x.data.event_slots.length){slotContainer.replaceChildren();x.data.event_slots.forEach(x=>addSlot(x.date,x.start,x.end))}for(const [k,v]of Object.entries(x.data)){if(k==='risk_options'){document.querySelectorAll('[name=risk_options]').forEach(c=>c.checked=v.includes(c.value))}else if(form.elements[k]){if(form.elements[k].type==='checkbox')form.elements[k].checked=!!v;else form.elements[k].value=v}}}}catch(err){form.classList.add('hidden');message(err.message,true)}}form.onsubmit=async e=>{e.preventDefault();
  const submit=e.submitter||form.querySelector('[type=submit]');
  if(submit?.disabled)return;
