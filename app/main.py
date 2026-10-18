@@ -321,7 +321,7 @@ def mail_request(id,request_data,force=False):
     user=os.getenv('SMTP_USER','').strip()
     password=os.getenv('SMTP_PASSWORD','')
     if not host or not sender:return 'smtp_not_configured'
-    protocol=r.get('protocol_number') or f"CRI-VE/BOZZA/{id:06d}"
+    protocol=r.get('protocol_number') or 'Non assegnato (richiesta storica)'
     date=r.get('protocol_at') or r.get('submitted_at') or ''
     label={'id':id,'event':request_data.get('event_name',''),
            'organizer':request_data.get('org_name',''),'protocol':protocol,'protocol_date':date}
@@ -338,7 +338,7 @@ def mail_request(id,request_data,force=False):
        '\nData registrazione: '+date+
        '\nDocumento allegato: Piano Sanitario precompilato, BOZZA NON APPROVATA dalla CRI.')
     document=render_excel(BASE/'templates'/'piano_sanitario_2026.xlsx',request_data)
-    safe_protocol=protocol.replace('/','-')
+    safe_protocol=protocol.replace('/','-') if r.get('protocol_number') else f'richiesta_{id}'
     msg.add_attachment(document,maintype='application',
       subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       filename=f'piano_sanitario_bozza_{safe_protocol}.xlsx')
