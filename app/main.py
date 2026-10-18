@@ -387,13 +387,13 @@ def login(body:Login,response:Response,request:Request):
     response.set_cookie('cri_admin',session_value+'.'+sign(session_value),httponly=True,secure=SECURE,samesite='strict',max_age=28800)
     return {'ok':True,'csrf':sign('csrf:'+session_value),'email':user['email'],
             'legacy_login':user['username'] if not user['email'] else None,
-            'display_name':user['display_name'],'is_admin':user['role']=='admin'}
+            'user_id':user['id'],'display_name':user['display_name'],'is_admin':user['role']=='admin'}
 @app.get('/api/session')
 def session(request:Request):
     user=require_user(request)
     return {'ok':True,'csrf':user['csrf'],'email':user['email'],
             'legacy_login':user['username'] if not user['email'] else None,
-            'display_name':user['display_name'],'is_admin':user['role']=='admin'}
+            'user_id':user['id'],'display_name':user['display_name'],'is_admin':user['role']=='admin'}
 @app.post('/api/logout')
 def logout(request:Request,response:Response):
     require_user(request)
