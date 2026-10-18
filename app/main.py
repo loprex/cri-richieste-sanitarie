@@ -597,7 +597,7 @@ def send_password_setup(email:str,name:str,link:str,forgot:bool=False)->str:
     msg.set_content('Gentile '+name+',\n\n'
         +('per recuperare l’accesso imposta una nuova password personale ' if forgot
           else 'per attivare il tuo account CRI Venezia imposta una password personale ')
-        'utilizzando questo collegamento:\n\n'+link+'\n\n'
+        +'utilizzando questo collegamento:\n\n'+link+'\n\n'
         'Il link scade dopo 48 ore ed è utilizzabile una sola volta. '
         'Se non hai richiesto un account contatta l’amministratore CRI Venezia.\n\n'
         'Non inoltrare questo link ad altre persone.')
