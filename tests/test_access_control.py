@@ -38,6 +38,10 @@ def test_single_prior_event_selection_markup():
     assert "for(const id of ids)" not in form_js
     assert "input.type='checkbox';input.className='reuseField'" in form_js
     assert "Seleziona un solo evento" in form_html
+    assert "previousYearFilter" in form_html
+    assert "renderPreviousEvents()" in form_js
+    assert "previous-event-card" in form_js
+    assert "input.name='previousEventChoice'" in form_js
 
 def test_user_activation_and_case_lifecycle(monkeypatch):
     sent=[]
@@ -195,7 +199,7 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     assert reply.status_code==200,reply.text
     receipt=reply.json()
     assert receipt["mail_status"]=="sent" and receipt["status"]=="submitted"
-    assert receipt["protocol_number"]==f"CRI-VE/{receipt['protocol_at'][:4]}/{req_id:06d}"
+    assert receipt["protocol_number"]=="CRI-VE/2026/000001"
     saved=maria.get(f"/api/requests/{req_id}").json()
     filename=backend.plan_filename(saved)
     assert filename.startswith("piano_sanitario_bozza_")
@@ -237,6 +241,8 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     assert old[0]["data"]["event_place"]=="Via Roma 10, Venezia"
     assert old[0]["data"]["participants_athletes"]==30
     assert old[0]["data"]["event_city"]=="Venezia"
+    assert old[0]["years"]==[2026]
+    assert old[0]["year_basis"]=="event"
     assert "event_dates" not in old[0]["data"]
     assert "event_slots" not in old[0]["data"]
     assert old[0]["data"]["org_name"]=="Ente esempio"
@@ -277,3 +283,36 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     new_login,_=login("maria@example.com","Changed-personal-password-456!")
     assert admin.put(f"/api/users/{maria_id}/status",headers=ah,json={"active":False}).status_code==200
     assert new_login.get("/api/session").status_code==401
+
+    # Year-based protocol numbers start again at 000001 on 1 January,
+    # regardless of the global request ID. Existing 2026 numbers are immutable.
+    monkeypatch.setattr(backend,"now_venice",lambda:"2027-01-01T00:02:00+01:00")
+    for n in (1,2):
+        event=admin.post("/api/requests",headers=ah,json={
+          "customer_email":"annual@example.com",
+          "event_name":f"Manifestazione 2027 n. {n}",
+          "event_city":"Venezia","days":14})
+        assert event.status_code==200,event.text
+        annual_token=event.json()["url"].split("/r/")[1]
+        annual_data=dict(data,event_name=f"Manifestazione 2027 n. {n}",
+          org_email="annual@example.com",event_dates="2027-06-20",
+          event_time="2027-06-20 09:00-18:00",
+          event_slots=[{"date":"2027-06-20","start":"09:00","end":"18:00"}])
+        submitted=admin.put("/api/r/"+annual_token,json=annual_data)
+        assert submitted.status_code==200,submitted.text
+        assert submitted.json()["protocol_number"]==f"CRI-VE/2027/{n:06d}"
+        assert submitted.json()["protocol_at"].startswith("2027-01-01")
+    assert admin.get(f"/api/requests/{req_id}").json()["protocol_number"]=="CRI-VE/2026/000001"
+
+    # The allocator also resumes safely from protocols created by the old
+    # ID-based scheme in a year with no counter yet.
+    with backend.db() as c:
+        c.execute(backend.text("""INSERT INTO requests
+          (token_hash,customer_email,created_at,expires_at,status,payload,
+           protocol_number,protocol_at) VALUES
+          (:hash,'legacy@example.com',:at,:at,'submitted','{}',
+           'CRI-VE/2038/000042',:at)"""),
+          {"hash":backend.digest("legacy-2038"),"at":"2038-01-02T09:00:00+01:00"})
+        assert backend.allocate_annual_protocol(c,2038)=="CRI-VE/2038/000043"
+        assert backend.allocate_annual_protocol(c,2038)=="CRI-VE/2038/000044"
+
