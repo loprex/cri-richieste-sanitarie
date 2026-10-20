@@ -105,8 +105,8 @@ async function openDetail(id){try{let r=await api('/requests/'+id);selected=id;c
 async function loadMail(){try{
  const cfg=await api('/settings/mail');
  const chosen=new Set(cfg.recipient_user_ids);
- $('recipients').innerHTML=cfg.recipient_users.map(u=>'<option value="'+u.id+'"'+
-   (chosen.has(u.id)?' selected':'')+'>'+esc(u.display_name||u.email)+' — '+esc(u.email)+'</option>').join('');
+ $('recipients').innerHTML=cfg.recipient_users.map(u=>'<label class="mail-recipient"><input type="checkbox" name="recipient_user_ids" value="'+u.id+'"'+
+   (chosen.has(u.id)?' checked':'')+'><span><strong>'+esc(u.display_name||u.email)+'</strong><small>'+esc(u.email)+'</small></span></label>').join('')||'<p class="muted">Nessun utente con email disponibile.</p>';
  $('subject').value=cfg.subject;
  $('body').value=cfg.body;$('enabled').checked=cfg.enabled;
  $('smtpStatus').textContent=(cfg.smtp_ready?'SMTP configurato':'SMTP NON configurato in Coolify')+
@@ -121,7 +121,7 @@ $('mailForm').onsubmit=async e=>{
  e.preventDefault();
  try{
   await api('/settings/mail','PUT',{enabled:$('enabled').checked,
-   recipient_user_ids:Array.from($('recipients').selectedOptions,o=>Number(o.value)),subject:$('subject').value,body:$('body').value});
+   recipient_user_ids:Array.from($('recipients').querySelectorAll('input:checked'),o=>Number(o.value)),subject:$('subject').value,body:$('body').value});
   msg('Impostazioni email salvate.');loadMail();
  }catch(err){msg(err.message,true)}
 };

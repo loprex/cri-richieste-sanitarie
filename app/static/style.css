@@ -132,3 +132,13 @@
  .users-create-fields button{width:100%}
  .users-table{min-width:970px}
 }
+
+.mail-recipient-title{font-weight:650;font-size:13px;margin-bottom:6px}
+.mail-recipient-list{border:1px solid #cbd3dd;border-radius:8px;padding:6px 14px;max-height:300px;overflow-y:auto;background:#fff}
+.mail-recipient{display:flex;align-items:center;gap:12px;margin:0;padding:12px 0;cursor:pointer;font-weight:400}
+.mail-recipient+.mail-recipient{border-top:1px solid #e4e8ed}
+.mail-recipient input{width:18px;height:18px;flex:0 0 18px;margin:0;padding:0;accent-color:#1677ff;cursor:pointer}
+.mail-recipient input:focus-visible{outline:2px solid #1677ff;outline-offset:3px}
+.mail-recipient span{min-width:0;overflow-wrap:anywhere}
+.mail-recipient strong,.mail-recipient small{display:block}
+.mail-recipient small{color:#586473;margin-top:3px;font-size:13px}
