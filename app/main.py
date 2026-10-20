@@ -402,8 +402,9 @@ class Submission(BaseModel):
 
 class Approval(BaseModel):notes:str=Field(default='',max_length=1500)
 class MailSettings(BaseModel):
+    model_config={"extra":"forbid"}
     enabled:bool=False
-    recipients:str=Field(default='',max_length=2000)
+    recipient_user_ids:list[int]=Field(default_factory=list,max_length=200)
     subject:str=Field(default='Nuova richiesta sanitaria CRI #{id} - {event}',max_length=300)
     body:str=Field(default='È stata ricevuta la richiesta #{id} per {event}. Il piano allegato è una BOZZA da verificare e approvare dalla CRI.',max_length=4000)
 
@@ -424,20 +425,25 @@ def mail_blocked(id:int,reason:str)->str:
         audit(c,id,'mail_blocked_'+reason)
     return reason
 
-def build_report_recipients(request_row,configured:str):
-    """Deduplicate internal recipients. Never copy the organizer/customer mailbox."""
+def mail_recipient_users(c):
+    return [dict(row) for row in c.execute(text("""SELECT id,email,display_name
+        FROM app_users WHERE active=TRUE AND email IS NOT NULL
+        ORDER BY display_name,email""")).mappings() if row['email'].strip()]
+
+def selected_mail_user_ids(c,users):
+    stored=get_setting(c,'mail_recipient_user_ids','')
+    if stored:return json.loads(stored)
+    legacy={x.strip().casefold() for x in re.split(r'[,;\n]',get_setting(c,'mail_recipients','')) if x.strip()}
+    return [u['id'] for u in users if u['email'].strip().casefold() in legacy]
+
+def build_report_recipients(request_row):
+    """Resolve selected accounts at send time and always include the link owner."""
     with db() as c:
-        admins=[record['email'] for record in c.execute(text("""SELECT email
-          FROM app_users WHERE role IN ('admin','superadmin') AND active=TRUE AND email IS NOT NULL
-          AND password_setup_required=FALSE""")).mappings()]
-        creator=fetchone(c,'SELECT email FROM app_users WHERE id=:id AND active=TRUE',
+        users=mail_recipient_users(c)
+        selected=set(selected_mail_user_ids(c,users))
+        creator=fetchone(c,'SELECT email FROM app_users WHERE id=:id',
                          {'id':request_row['owner_user_id']}) if request_row.get('owner_user_id') else None
-    configured=[x.strip() for x in re.split(r'[,;\n]',configured) if x.strip()]
-    # Always notify the official CRI Venezia administrative mailbox for a
-    # completed organizer request, even while its web-login activation is pending.
-    # The mailbox recipient is explicitly designated by the committee; receiving
-    # a notification is independent of having an active application session.
-    candidates=[ADDITIONAL_ADMIN_EMAIL]+configured+admins+(
+    candidates=[u['email'] for u in users if u['id'] in selected]+(
         [creator['email']] if creator and creator.get('email') else [])
     seen=set()
     recipients=[]
@@ -456,11 +462,10 @@ def mail_request(id,request_data,force=False):
         if not r or r['status'] not in ('submitted','approved'):return 'not_submitted'
         if r['mailed_at'] and not force:return 'already_sent'
         enabled=get_setting(c,'mail_enabled','false')=='true'
-        configured=get_setting(c,'mail_recipients','')
         subject=get_setting(c,'mail_subject','Piano Sanitario CRI - protocollo {protocol} - {event}')
         body=get_setting(c,'mail_body','Nuova richiesta sanitaria per {event}. Documento da verificare e approvare.')
     if not enabled:return mail_blocked(id,'disabled')
-    recipients=build_report_recipients(r,configured)
+    recipients=build_report_recipients(r)
     if not recipients:return mail_blocked(id,'no_recipients')
     host=os.getenv('SMTP_HOST','').strip()
     port=int(os.getenv('SMTP_PORT','587'))
@@ -1281,15 +1286,25 @@ def export_data(id:int,request:Request):
 @app.get('/api/settings/mail')
 def get_mail_settings(request:Request):
     require_admin(request)
-    with db() as c:return {'enabled':get_setting(c,'mail_enabled','false')=='true','recipients':get_setting(c,'mail_recipients'),'subject':get_setting(c,'mail_subject','Piano Sanitario CRI - protocollo {protocol} - {event}'),'body':get_setting(c,'mail_body','È stata ricevuta la richiesta #{id} per {event}. Il piano allegato è una BOZZA da verificare e approvare dalla CRI.'),'smtp_ready':bool(os.getenv('SMTP_HOST') and os.getenv('SMTP_FROM')),'administration_mail_paused':not administration_mail_active()}
+    with db() as c:
+        users=mail_recipient_users(c)
+        return {'enabled':get_setting(c,'mail_enabled','false')=='true',
+            'recipient_user_ids':selected_mail_user_ids(c,users),'recipient_users':users,
+            'subject':get_setting(c,'mail_subject','Piano Sanitario CRI - protocollo {protocol} - {event}'),
+            'body':get_setting(c,'mail_body','È stata ricevuta la richiesta #{id} per {event}. Il piano allegato è una BOZZA da verificare e approvare dalla CRI.'),
+            'smtp_ready':bool(os.getenv('SMTP_HOST') and os.getenv('SMTP_FROM')),
+            'administration_mail_paused':not administration_mail_active()}
 @app.put('/api/settings/mail')
 def update_mail_settings(body:MailSettings,request:Request):
     require_admin(request)
-    addresses=[x.strip() for x in re.split(r'[,;\n]',body.recipients) if x.strip()]
-    if len(addresses)>20 or any(not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',x) for x in addresses):raise HTTPException(422,'Destinatari non validi (massimo 20)')
-    if body.enabled and not addresses:raise HTTPException(422,'Indicare almeno un destinatario')
+    selected=list(dict.fromkeys(body.recipient_user_ids))
     with db() as c:
-        for k,v in [('mail_enabled','true' if body.enabled else 'false'),('mail_recipients',', '.join(addresses)),('mail_subject',body.subject),('mail_body',body.body)]:set_setting(c,k,v)
+        valid={u['id'] for u in mail_recipient_users(c)}
+        if any(uid not in valid for uid in selected):
+            raise HTTPException(422,'Selezionare utenti attivi con email presenti nel tool')
+        for k,v in [('mail_enabled','true' if body.enabled else 'false'),
+                    ('mail_recipient_user_ids',json.dumps(selected)),('mail_recipients',''),
+                    ('mail_subject',body.subject),('mail_body',body.body)]:set_setting(c,k,v)
         audit(c,None,'mail_settings_updated')
     return {'ok':True}
 class TestMail(BaseModel):
@@ -1304,8 +1319,9 @@ def test_mail(body:TestMail,request:Request):
     if not may_send_to_email(target):
         raise HTTPException(409,'Invio a Amministrazione CRI sospeso in TEST: riattivare solo in produzione')
     with db() as c:
-        configured=get_setting(c,'mail_recipients','')
-        addresses={x.strip().lower() for x in re.split(r'[,;\n]',configured) if x.strip()}
+        users=mail_recipient_users(c)
+        selected=set(selected_mail_user_ids(c,users))
+        addresses={u['email'].strip().lower() for u in users if u['id'] in selected}
         if admin.get('email'):addresses.add(admin['email'].strip().lower())
         for entry in c.execute(text("""SELECT email FROM app_users WHERE role IN ('admin','superadmin')
              AND active=TRUE AND email IS NOT NULL""")).mappings():

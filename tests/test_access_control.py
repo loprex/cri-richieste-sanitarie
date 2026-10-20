@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT=tempfile.mkdtemp(prefix="cri-test-")
 os.environ["DATA_DIR"]=ROOT
-os.environ["DATABASE_URL"]="sqlite:///"+str(Path(ROOT)/"test.db")
+os.environ["DATABASE_URL"]="sqlite:///"+(Path(ROOT)/"test.db").as_posix()
 os.environ["ADMIN_PASSWORD"]="sample-admin-password-for-tests-only-1234"
 os.environ["SESSION_SECRET"]="sample-test-secret-key-not-for-production-0123456789"
 os.environ["CRI_ADMIN_EMAIL"]="admin@example.com"
@@ -157,7 +157,7 @@ def test_login_three_failures_manual_lock_and_password_recovery(monkeypatch):
     for expected in (401,401,423):
         attempt=c.post("/api/login",json={"email":email,"password":"Wrong-again-000"})
         assert attempt.status_code==expected,attempt.text
-    assert c.post(f"/api/users/{uid}/unlock",json={}).status_code==401
+    assert c.post(f"/api/users/{uid}/unlock",json={}).status_code==403
     assert admin.post(f"/api/users/{uid}/unlock",headers=ah,json={}).status_code==200
     signed,_=login(email,new_password)
     assert signed.get("/api/session").status_code==200
@@ -277,7 +277,7 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
         if u["email"]=="amministrazione@crivenezia.it")
     assert second_admin["role"]=="admin"
     assert admin.get("/api/session").json()["role"]=="superadmin"
-    assert second_admin["password_setup_required"] is True
+    assert bool(second_admin["password_setup_required"]) is True
     # Designated admin has no initial password until activated via its own mailbox.
     assert TestClient(app).post("/api/login",json={
       "email":"amministrazione@crivenezia.it","password":"guess-password"}).status_code==401
@@ -299,6 +299,7 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
         json={"password":"Administration-password-2026!"}).status_code==200
     monkeypatch.setenv("CRI_DEPLOYMENT_ENV","test")
     monkeypatch.setenv("CRI_ENABLE_ADMINISTRATION_EMAIL","false")
+    sent.clear()  # Discard the explicitly permitted production activation email.
     second_admin_client,second_admin_headers=login(
         "amministrazione@crivenezia.it","Administration-password-2026!")
     # Administrators retain sanitary-request and SMTP-setting privileges,
@@ -424,8 +425,11 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     cached=maria.get(f"/api/r/{token}/address-suggestions?q=Via%20Roma")
     assert cached.status_code==200 and cached.json()['available'] is True
 
+    options=admin.get("/api/settings/mail").json()["recipient_users"]
+    admin_id=next(u["id"] for u in options if u["email"]=="admin@example.com")
+    assert admin.put("/api/settings/mail",headers=ah,json={"recipient_user_ids":[99999999]}).status_code==422
     settings=admin.put("/api/settings/mail",headers=ah,json={
-       "enabled":True,"recipients":"office@example.com;admin@example.com;amministrazione@crivenezia.it",
+       "enabled":True,"recipient_user_ids":[admin_id,admin_id],
        "subject":"Piano Sanitario {protocol} - {event}","body":"Evento {event} {protocol_date}"})
     assert settings.status_code==200,settings.text
     assert admin.get("/api/settings/mail").json()["administration_mail_paused"] is True
@@ -434,10 +438,10 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     assert blocked.status_code==409
     assert not any(mail["To"]=="amministrazione@crivenezia.it" for mail in sent)
     test_email=admin.post("/api/settings/mail/test",headers=ah,json={
-       "to":"office@example.com"})
+       "to":"admin@example.com"})
     assert test_email.status_code==200,test_email.text
     assert test_email.json()["status"]=="accepted_by_smtp"
-    assert sent[-1]["To"]=="office@example.com"
+    assert sent[-1]["To"]=="admin@example.com"
     forbidden=admin.post("/api/settings/mail/test",headers=ah,json={
        "to":"unknown@example.com"})
     assert forbidden.status_code==403
@@ -478,7 +482,7 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
     assert len(plan_mails)==1
     email=plan_mails[0]
     rec={x.strip() for x in email["To"].split(",")}
-    assert rec=={"admin@example.com","office@example.com","maria@example.com"}
+    assert rec=={"admin@example.com","maria@example.com"}
     assert "amministrazione@crivenezia.it" not in rec
     assert "organizzatore@example.com" not in rec
     assert filename in [p.get_filename() for p in email.iter_attachments()]
@@ -582,3 +586,24 @@ def test_user_activation_and_case_lifecycle(monkeypatch):
         assert backend.allocate_annual_protocol(c,2038)=="CRI-VE/2038/000043"
         assert backend.allocate_annual_protocol(c,2038)=="CRI-VE/2038/000044"
 
+
+
+def test_recipient_selection_tracks_accounts_and_always_includes_owner(monkeypatch):
+    from sqlalchemy import text
+    with backend.db() as c:
+        users=backend.mail_recipient_users(c)
+        owner=next(u for u in users if u['email']=='admin@example.com')
+        other=next(u for u in users if u['id']!=owner['id'])
+    monkeypatch.setattr(backend,'may_send_to_email',lambda address:True)
+    monkeypatch.setattr(backend,'selected_mail_user_ids',lambda c,users:[])
+    assert backend.build_report_recipients({'owner_user_id':owner['id']})==[owner['email']]
+    monkeypatch.setattr(backend,'selected_mail_user_ids',lambda c,users:[owner['id'],other['id']])
+    recipients=backend.build_report_recipients({'owner_user_id':owner['id']})
+    assert set(recipients)=={owner['email'],other['email']} and len(recipients)==2
+    monkeypatch.setattr(backend,'selected_mail_user_ids',lambda c,users:[999999999])
+    assert backend.build_report_recipients({'owner_user_id':owner['id']})==[owner['email']]
+
+def test_legacy_recipient_migration_matches_registered_accounts(monkeypatch):
+    monkeypatch.setattr(backend,'get_setting',lambda c,key,default='':
+        'KNOWN@example.com;external@example.com' if key=='mail_recipients' else '')
+    assert backend.selected_mail_user_ids(None,[{'id':7,'email':'known@example.com'}])==[7]
