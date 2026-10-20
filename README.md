@@ -6,7 +6,7 @@ Applicazione **indipendente da LOPREXAPP**. Accesso multiutente, link casuale pe
 2. Invia personalmente il link al richiedente. Scadenza 1–60 giorni.
 3. Organizzatore compila il questionario; dopo invio definitivo il link **non è riutilizzabile per modificare o inviare**.
 4. I dati sono registrati in PostgreSQL. Si genera una copia dell'Excel originale, compilando solo i campi mappati; formule, grafica e sezioni di approvazione restano nel documento.
-5. Se l'amministratore ha abilitato la funzione e configurato SMTP, il piano **BOZZA NON APPROVATA** viene inviato automaticamente ai destinatari email configurabili (massimo 20), con oggetto e testo modificabili. L'amministratore può reinviare manualmente.
+5. Se l'amministratore ha abilitato la funzione e configurato SMTP, il piano **BOZZA NON APPROVATA** viene inviato automaticamente ai utenti del tool selezionati e sempre al creatore del link, con oggetto e testo modificabili. L'amministratore può reinviare manualmente.
 6. CRI verifica il piano in Excel e approva la richiesta dall'area admin. L'approvazione del workflow **non equivale** ad attestazione sanitaria, firma o autorizzazione dell'evento.
 
 ## Account operatori e migrazione
@@ -46,7 +46,7 @@ Applicazione **indipendente da LOPREXAPP**. Accesso multiutente, link casuale pe
 - La lista visualizza data di creazione, scadenza del link quando ancora da compilare, protocollo/data dopo l'invio e, per admin, email e nome dell'operatore che ha creato la richiesta.
 - I nuovi operatori accedono con **email e password**; admin assegna/modifica l'email e reimposta le password. Gli account legacy privi di email possono temporaneamente entrare con il vecchio username; dopo l'associazione dell'email lo username non è più un metodo di accesso.
 - Il primo amministratore viene migrato senza perdere la password corrente. Per assegnargli automaticamente l'email alla prima migrazione, è possibile impostare `CRI_ADMIN_EMAIL` nel servizio Coolify (opzionale), oppure utilizzare la pagina amministrativa "Utenti e password". Non usare l'indirizzo SMTP come email amministrativa per impostazione predefinita senza consenso.
-- Con **Invio automatico Piano Sanitario abilitato**, la bozza XLSX viene inviata in una sola email all'unione senza duplicati di: indirizzi admin configurati, email degli amministratori attivi e email dell'operatore creatore. **Non viene inviata automaticamente al cliente/organizzatore.** SMTP deve essere operativo, l'amministratore deve avere un destinatario configurato e l'operatore creatore deve avere un'email associata. Eventuali errori sono registrati senza perdere il protocollo e la richiesta.
+- Con **Invio automatico Piano Sanitario abilitato**, la bozza XLSX viene inviata in una sola email all'unione senza duplicati di: utenti attivi scelti nel selettore ed email dell’operatore che ha inviato il link. **Non viene inviata automaticamente al cliente/organizzatore.** SMTP deve essere operativo, l'operatore creatore deve avere un'email associata. Eventuali errori sono registrati senza perdere il protocollo e la richiesta.
 - Il reset password e la modifica email invalidano le sessioni aperte.
 - Prima del deploy in staging eseguire il backup del database, controllare i test automatici, verificare che tutti i destinatari email siano appropriati e usare solo dati di prova.
 
@@ -58,7 +58,7 @@ Applicazione **indipendente da LOPREXAPP**. Accesso multiutente, link casuale pe
 
 ## Email: quando arriva una notifica e come provarla
 - Alla **creazione del link**, il messaggio con il link di compilazione viene inviato all'**organizzatore** tramite SMTP (l'esito di accettazione dal server viene mostrato subito).
-- Alla **compilazione definitiva**, se **Impostazioni email → Abilita invio automatico** è selezionato, parte **una sola notifica automatica (trigger sul passaggio a `submitted`)**, con protocollo, data, collegamento riservato ed Excel precompilato allegato. In TEST si avvisano gli altri destinatari CRI configurati, gli amministratori attivi e l'operatore creatore (se con email valida), escludendo sempre **amministrazione@crivenezia.it**. Dopo un passaggio in produzione autorizzato, l'indirizzo amministrativo ufficiale potrà essere incluso tramite attivazione esplicita. La bozza non attiva notifiche e l'invio definitivo non può essere ripetuto dallo stesso link. Non inviare documenti all'organizzatore automaticamente.
+- Alla **compilazione definitiva**, se **Impostazioni email → Abilita invio automatico** è selezionato, parte **una sola notifica automatica (trigger sul passaggio a `submitted`)**, con protocollo, data, collegamento riservato ed Excel precompilato allegato. In TEST si avvisano gli utenti selezionati e l’operatore creatore (se con email valida), escludendo sempre **amministrazione@crivenezia.it**. Dopo un passaggio in produzione autorizzato, l'indirizzo amministrativo ufficiale potrà essere incluso tramite attivazione esplicita. La bozza non attiva notifiche e l'invio definitivo non può essere ripetuto dallo stesso link. Non inviare documenti all'organizzatore automaticamente.
 - Il link nella notifica ha il formato `/?request=ID`: la richiesta viene aperta dopo il login se e solo se l'operatore ha i permessi necessari. **Non usare il token pubblico** nei messaggi interni.
 - L'Excel porta nel nome **data e protocollo interno**; il documento è una **BOZZA DA VERIFICARE**. La registrazione della richiesta viene salvata anche se la notifica fallisce.
 - Il blocco di invio ora mostra e memorizza motivazioni sintetiche: `disabled`, `no_recipients`, `smtp_not_configured`, `smtp_send_failed`, `excel_generation_failed`. Sono visibili nell'elenco e nel dettaglio.
@@ -105,3 +105,6 @@ Per comodità locale si usa SQLite nel volume `/data`; **in produzione configura
 
 ## Sicurezza
 Il link è casuale e non parlante: questo riduce i tentativi di indovinare l'URL, ma **non sostituisce autenticazione e autorizzazione**. L'accesso admin è protetto da sessione HttpOnly e CSRF; per uso pubblico adottare controlli aggiuntivi indicati sopra.
+
+### Selezione destinatari del modulo
+Il selettore multiplo in Impostazioni email mostra gli utenti attivi con email. La configurazione salva gli ID: le successive modifiche dell’email vengono recepite automaticamente. Gli indirizzi della precedente configurazione vengono associati agli utenti corrispondenti; indirizzi esterni non vengono mantenuti. Nessun amministratore viene aggiunto automaticamente. Il creatore del link viene sempre incluso, anche con selezione vuota, senza duplicati. Resta valido il blocco della casella amministrativa in TEST.

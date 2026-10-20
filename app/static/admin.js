@@ -104,21 +104,24 @@ $('refresh').onclick=refresh;
 async function openDetail(id){try{let r=await api('/requests/'+id);selected=id;const data=r.data;const emailState=r.mailed_at?'Email inviata il '+formatDate(r.mailed_at):mailStatus(r.mail_error);$('detailPanel').classList.remove('hidden');$('detail').innerHTML='<p><b>Stato:</b> '+esc(humanStatus(r.status))+' • <b>Email:</b> '+esc(r.customer_email)+'</p><p><b>Notifica CRI:</b> '+esc(emailState)+'</p><p><b>Evento:</b> '+esc(r.planned_event_name||data.event_name||'—')+' • <b>Città:</b> '+esc(r.planned_event_city||data.event_city||'—')+'</p><p><b>Protocollo interno:</b> '+esc(r.protocol_number||'Non ancora assegnato')+' • <b>Data:</b> '+esc(formatDate(r.protocol_at))+'</p><div class="gridtable"><table><tbody>'+Object.entries(data).map(([k,v])=>'<tr><th>'+esc(humanLabel(k))+'</th><td>'+esc(humanValue(v))+'</td></tr>').join('')+'</tbody></table></div>';$('notes').value=r.notes||'';$('detailActions').innerHTML='<a href="/api/requests/'+id+'/excel" target="_blank">Scarica Piano Sanitario Excel</a> &nbsp; <a href="/api/requests/'+id+'/data" target="_blank">Esporta dati JSON</a><p><button id="approve">Approva richiesta</button> <button id="sendmail" class="secondary">Invia / reinvia email</button></p>';if(!currentUser.is_admin){$('approve').remove();$('notes').disabled=true}$('approve')?.addEventListener('click',async()=>{if(!confirm('Confermi approvazione amministrativa della richiesta? Il file richiede comunque la verifica sanitaria competente.'))return;try{await api('/requests/'+id+'/approve','POST',{notes:$('notes').value});msg('Stato aggiornato.');refresh();openDetail(id)}catch(e){msg(e.message,true)}});$('sendmail').onclick=async()=>{if(!confirm('Inviare il piano Excel ai destinatari configurati?'))return;try{let x=await api('/requests/'+id+'/send-email','POST',{});msg('Notifica CRI: '+mailStatus(x.status),x.status!=='sent');refresh();openDetail(id)}catch(e){msg(e.message,true)}};const archive=document.createElement('button');archive.type='button';archive.className='secondary';archive.textContent=r.archived_at?'Ripristina richiesta':'Archivia richiesta';archive.onclick=async()=>{const archiveIt=!r.archived_at;if(!confirm(archiveIt?'Spostare questa richiesta in Archiviate? I dati verranno conservati.':'Riportare questa richiesta nell’elenco attivo?'))return;try{await api('/requests/'+id+'/archive?archived='+archiveIt,'POST',{});$('detailPanel').classList.add('hidden');msg(archiveIt?'Richiesta archiviata.':'Richiesta ripristinata.');refresh()}catch(e){msg(e.message,true)}};$('detailActions').appendChild(archive);$('detailPanel').scrollIntoView({behavior:'smooth'})}catch(e){msg(e.message,true)}}
 async function loadMail(){try{
  const cfg=await api('/settings/mail');
- $('recipients').value=cfg.recipients;$('subject').value=cfg.subject;
+ const chosen=new Set(cfg.recipient_user_ids);
+ $('recipients').innerHTML=cfg.recipient_users.map(u=>'<option value="'+u.id+'"'+
+   (chosen.has(u.id)?' selected':'')+'>'+esc(u.display_name||u.email)+' — '+esc(u.email)+'</option>').join('');
+ $('subject').value=cfg.subject;
  $('body').value=cfg.body;$('enabled').checked=cfg.enabled;
  $('smtpStatus').textContent=(cfg.smtp_ready?'SMTP configurato':'SMTP NON configurato in Coolify')+
    ' · '+(cfg.enabled?'Invio automatico attivo':'Invio automatico DISATTIVATO: nessuna notifica alla compilazione')+
    (cfg.administration_mail_paused?' · amministrazione@crivenezia.it: INVIO SOSPESO FINO ALLA PRODUZIONE':'');
  if(!$('testEmail').value){
    $('testEmail').value=currentUser.email||
-     (cfg.recipients||'').split(/[,;\n]/).map(x=>x.trim()).find(Boolean)||'';
+     cfg.recipient_users.find(u=>chosen.has(u.id))?.email||'';
  }
 }catch(e){msg(e.message,true)}}
 $('mailForm').onsubmit=async e=>{
  e.preventDefault();
  try{
   await api('/settings/mail','PUT',{enabled:$('enabled').checked,
-   recipients:$('recipients').value,subject:$('subject').value,body:$('body').value});
+   recipient_user_ids:Array.from($('recipients').selectedOptions,o=>Number(o.value)),subject:$('subject').value,body:$('body').value});
   msg('Impostazioni email salvate.');loadMail();
  }catch(err){msg(err.message,true)}
 };
