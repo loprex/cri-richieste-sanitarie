@@ -35,16 +35,37 @@ RISK_FLAGS = {
     'Servizi igienici':134, 'Disponibilità acqua':135,
 }
 
-# The historical form used risks for some information that now has a structured
-# Allegato 4 field. Keep old records compatible, but do not double-write data.
-DERIVED_RISKS = {
-    'In ambiente acquatico (lago, fiume, mare, piscina)': 'Ambiente acquatico',
-    'Ponteggio temporaneo, palco o coperture': 'Palco o ponteggio temporaneo',
-    'Delimitato da recinzioni': 'Presenza di recinzioni',
-    'Recinzioni temporanee': 'Presenza di recinzioni',
-    'Servizi igienici disponibili': 'Servizi igienici',
-    "Disponibilità d'acqua": 'Disponibilità acqua',
+# Column I contains immutable score weights. Column J contains organizer flags.
+# Never overwrite I102:I153: doing so would corrupt the event-risk assessment.
+CONTEXT_FLAGS={
+    'In città':121, 'In periferia/paesi o piccoli centri urbani':122,
+    'In ambiente acquatico (lago, fiume, mare, piscina)':123,
+    'Altro (montano, impervio o rurale)':124,
 }
+FEATURE_FLAGS={
+    'Al coperto':125, "All'aperto":126,
+    'Localizzato e ben definito':127, 'Esteso oltre un campo da calcio':128,
+    'Non delimitato da recinzioni':129, 'Delimitato da recinzioni':130,
+    'Presenza di scale in entrata e/o uscita':131, 'Recinzioni temporanee':132,
+    'Ponteggio temporaneo, palco o coperture':133,
+}
+LOGISTICS_FLAGS={
+    'Servizi igienici disponibili':134, "Disponibilità d'acqua":135,
+    'Punto di ristoro':136,
+}
+DURATION_FLAGS={'<12 ore':118, '12 ore - 3 giorni':119, '>3 giorni':120}
+PARTICIPANTS_FLAGS={
+    '<25.000':138, '25.000-100.000':139,
+    '100.000-500.000':140, '>500.000':141,
+}
+AGE_FLAGS={'25-65 anni':142, 'Sotto 25 o sopra 65 anni':143}
+DENSITY_FLAGS={
+    'Bassa (1-2 persone/m²)':144, 'Media (3-4 persone/m²)':145,
+    'Alta (4-8 persone/m²)':146, 'Estrema (>8 persone/m²)':147,
+}
+MOOD_FLAGS={'Rilassato':148, 'Eccitato':149, 'Aggressivo':150}
+POSITION_FLAGS={'Seduti':151, 'In parte seduti':152, 'In piedi':153}
+LEGACY_LOCATION={'Al chiuso':125, "All'aperto":126}
 LABELS = {
     'org_name':'Ragione sociale / ente', 'org_contact':'Nome completo del referente',
     'org_first_name':'Nome referente', 'org_last_name':'Cognome referente',
@@ -90,25 +111,38 @@ GROUPS = [
 
 
 def input_cells(values):
-    cells = {address:('text',values[key]) for key,address in FIELDS.items()
-             if values.get(key) is not None and str(values[key]).strip()}
+    cells={address:('text',values[key]) for key,address in FIELDS.items()
+           if values.get(key) is not None and str(values[key]).strip()}
     for key,address in NUMERIC_FIELDS.items():
         if values.get(key) is not None:
-            cells[address] = ('number',int(values[key]))
+            cells[address]=('number',int(values[key]))
     if 'road_closure' in values:
-        cells['G43' if values['road_closure'] else 'I43'] = ('text','X')
-    if values.get('recurrence') in RECURRENCE:
-        cells['I'+str(RECURRENCE[values['recurrence']])] = ('number',1)
-    if values.get('event_type') in EVENT_TYPE:
-        cells['I'+str(EVENT_TYPE[values['event_type']])] = ('number',1)
-    risks = set(values.get('risk_options') or [])
-    for key in ('venue_context','venue_features','venue_logistics'):
-        for name in (values.get(key) or []):
-            if name in DERIVED_RISKS:
-                risks.add(DERIVED_RISKS[name])
-    for label,row in RISK_FLAGS.items():
-        if label in risks:
-            cells['I'+str(row)] = ('number',1)
+        cells['G43' if values['road_closure'] else 'I43']=('text','X')
+
+    def flag(row):
+        # In the original template, J is the response, I is the weight.
+        cells['J'+str(row)]=('number',1)
+
+    for key,rows in (('recurrence',RECURRENCE),('event_type',EVENT_TYPE),
+                     ('event_duration_bracket',DURATION_FLAGS),
+                     ('participants_estimate_bracket',PARTICIPANTS_FLAGS),
+                     ('crowd_age_profile',AGE_FLAGS),
+                     ('crowd_density',DENSITY_FLAGS),
+                     ('crowd_mood',MOOD_FLAGS),('crowd_position',POSITION_FLAGS),
+                     ('location_type',LEGACY_LOCATION)):
+        choice=values.get(key)
+        if choice in rows:flag(rows[choice])
+
+    for key,rows in (('venue_context',CONTEXT_FLAGS),
+                     ('venue_features',FEATURE_FLAGS),
+                     ('venue_logistics',LOGISTICS_FLAGS)):
+        for choice in values.get(key) or []:
+            if choice in rows:flag(rows[choice])
+
+    for choice in values.get('risk_options') or []:
+        if choice in RISK_FLAGS:flag(RISK_FLAGS[choice])
+    if any(values.get(k,0)>0 for k in ('children','elderly','disabled')):
+        flag(113)
     return cells
 
 
