@@ -33,3 +33,11 @@ with ZipFile(path) as z:
         row=sheet.find(".//"+q+"sheetData/"+q+"row[@r='"+str(number)+"']")
         if row is not None:
             print("CELLREFS",number," ".join(c.attrib.get("r","")+"("+c.attrib.get("t","n")+")" for c in row.findall(q+"c")))
+
+    for n in (102,103,104,106,107,111,112,113,118,121,125,126,130,132,133,134,135,136,138,142,144,145,148,151,153,154):
+        row=sheet.find(".//"+q+"sheetData/"+q+"row[@r='"+str(n)+"']")
+        if row is not None:
+            for c in row.findall(q+"c"):
+                formula=c.find(q+"f")
+                if formula is not None:
+                    print("FORMULA",c.attrib.get("r"),repr(formula.text))
