@@ -139,6 +139,19 @@ def input_cells(values):
         for choice in values.get(key) or []:
             if choice in rows:flag(rows[choice])
 
+    # Original printable summary of venue and time (blanks verified in template).
+    selected=set(values.get('venue_features') or [])
+    if values.get('location_type'):selected.add(values['location_type'])
+    location_cells={
+        'Al chiuso':'B96','Al coperto':'B96',
+        "All'aperto":'D96','Percorso isolato':'F96','Percorso su strada':'H96',
+    }
+    for key,address in location_cells.items():
+        if key in selected:cells[address]=('text','X')
+    if values.get('event_duration_bracket'):
+        cells['B99']=('text',values['event_duration_bracket'])
+    if values.get('event_pause'):
+        cells['G99']=('text',values['event_pause'])
     for choice in values.get('risk_options') or []:
         if choice in RISK_FLAGS:flag(RISK_FLAGS[choice])
     if any(values.get(k,0)>0 for k in ('children','elderly','disabled')):
