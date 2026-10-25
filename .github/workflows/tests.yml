@@ -12,6 +12,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements-test.txt
+      - run: python tests/inspect_template_temporary.py
       - run: node --check app/static/form.js
       - run: python -m pytest -q tests/
 
