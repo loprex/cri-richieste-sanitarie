@@ -28,3 +28,8 @@ with ZipFile(path) as z:
                 value=(value or ("FORMULA "+(formula.text or "")))[:75]
                 parts.append(ref+":"+value.replace("\n"," "))
         if parts:print("ROW",number,"|".join(parts[:24]))
+
+    for number in (31,32,33,34,35,38,43,94,96,99,102,106,111,118,121,125,134,138,142,144,148,151):
+        row=sheet.find(".//"+q+"sheetData/"+q+"row[@r='"+str(number)+"']")
+        if row is not None:
+            print("CELLREFS",number," ".join(c.attrib.get("r","")+"("+c.attrib.get("t","n")+")" for c in row.findall(q+"c")))
