@@ -122,7 +122,39 @@ async function refresh(){try{
 }catch(e){msg(e.message,true)}}
 document.querySelectorAll('.filterView').forEach(b=>b.onclick=()=>{currentFilter=b.dataset.filter;$('detailPanel').classList.add('hidden');refresh()});
 $('refresh').onclick=refresh;
-async function openDetail(id){try{let r=await api('/requests/'+id);selected=id;const data=r.data;const emailState=r.mailed_at?'Email inviata il '+formatDate(r.mailed_at):mailStatus(r.mail_error);$('detailPanel').classList.remove('hidden');$('detail').innerHTML='<p><b>Stato:</b> '+esc(humanStatus(r.status))+' • <b>Email:</b> '+esc(r.customer_email)+'</p><p><b>Notifica CRI:</b> '+esc(emailState)+'</p><p><b>Evento:</b> '+esc(r.planned_event_name||data.event_name||'—')+' • <b>Città:</b> '+esc(r.planned_event_city||data.event_city||'—')+'</p><p><b>Protocollo interno:</b> '+esc(r.protocol_number||'Non ancora assegnato')+' • <b>Data:</b> '+esc(formatDate(r.protocol_at))+'</p><div class="gridtable"><table><tbody>'+Object.entries(data).map(([k,v])=>'<tr><th>'+esc(humanLabel(k))+'</th><td>'+esc(humanValue(v,k))+'</td></tr>').join('')+'</tbody></table></div>';$('notes').value=r.notes||'';$('detailActions').innerHTML='<a href="/api/requests/'+id+'/excel" target="_blank">Scarica Piano Sanitario Excel</a> &nbsp; <a href="/api/requests/'+id+'/data" target="_blank">Esporta dati JSON</a><p><button id="approve">Approva richiesta</button> <button id="sendmail" class="secondary">Invia / reinvia email</button></p>';if(!currentUser.is_admin){$('approve').remove();$('notes').disabled=true}$('approve')?.addEventListener('click',async()=>{if(!confirm('Confermi approvazione amministrativa della richiesta? Il file richiede comunque la verifica sanitaria competente.'))return;try{await api('/requests/'+id+'/approve','POST',{notes:$('notes').value});msg('Stato aggiornato.');refresh();openDetail(id)}catch(e){msg(e.message,true)}});$('sendmail').onclick=async()=>{if(!confirm('Inviare il piano Excel ai destinatari configurati?'))return;try{let x=await api('/requests/'+id+'/send-email','POST',{});msg('Notifica CRI: '+mailStatus(x.status),x.status!=='sent');refresh();openDetail(id)}catch(e){msg(e.message,true)}};const archive=document.createElement('button');archive.type='button';archive.className='secondary';archive.textContent=r.archived_at?'Ripristina richiesta':'Archivia richiesta';archive.onclick=async()=>{const archiveIt=!r.archived_at;if(!confirm(archiveIt?'Spostare questa richiesta in Archiviate? I dati verranno conservati.':'Riportare questa richiesta nell’elenco attivo?'))return;try{await api('/requests/'+id+'/archive?archived='+archiveIt,'POST',{});$('detailPanel').classList.add('hidden');msg(archiveIt?'Richiesta archiviata.':'Richiesta ripristinata.');refresh()}catch(e){msg(e.message,true)}};$('detailActions').appendChild(archive);$('detailPanel').scrollIntoView({behavior:'smooth'})}catch(e){msg(e.message,true)}}
+async function downloadExcel(id){
+ try{
+  const response=await fetch('/api/requests/'+encodeURIComponent(id)+'/excel',{
+   method:'GET',credentials:'same-origin',cache:'no-store',
+   headers:{'Accept':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}
+  });
+  if(!response.ok){
+   let details='Errore HTTP '+response.status;
+   try{
+    const payload=await response.json();
+    if(typeof payload.detail==='string')details=payload.detail;
+   }catch{}
+   throw new Error(details);
+  }
+  const bytes=await response.arrayBuffer();
+  const magic=new Uint8Array(bytes.slice(0,4));
+  if(magic.length<4||magic[0]!==0x50||magic[1]!==0x4b||magic[2]!==0x03||magic[3]!==0x04)
+   throw new Error('Il server non ha restituito un documento Excel valido (formato ZIP).');
+  const disposition=response.headers.get('Content-Disposition')||'';
+  const match=disposition.match(/filename="?([^";]+)"?/i);
+  const filename=match?match[1]:'piano_sanitario_richiesta_'+id+'.xlsx';
+  const file=new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const url=URL.createObjectURL(file);
+  const link=document.createElement('a');
+  link.href=url;link.download=filename.endsWith('.xlsx')?filename:filename+'.xlsx';
+  document.body.appendChild(link);
+  link.click();link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),30000);
+ }catch(err){
+  msg('Impossibile scaricare il Piano Sanitario Excel: '+err.message,true);
+ }
+}
+async function openDetail(id){try{let r=await api('/requests/'+id);selected=id;const data=r.data;const emailState=r.mailed_at?'Email inviata il '+formatDate(r.mailed_at):mailStatus(r.mail_error);$('detailPanel').classList.remove('hidden');$('detail').innerHTML='<p><b>Stato:</b> '+esc(humanStatus(r.status))+' • <b>Email:</b> '+esc(r.customer_email)+'</p><p><b>Notifica CRI:</b> '+esc(emailState)+'</p><p><b>Evento:</b> '+esc(r.planned_event_name||data.event_name||'—')+' • <b>Città:</b> '+esc(r.planned_event_city||data.event_city||'—')+'</p><p><b>Protocollo interno:</b> '+esc(r.protocol_number||'Non ancora assegnato')+' • <b>Data:</b> '+esc(formatDate(r.protocol_at))+'</p><div class="gridtable"><table><tbody>'+Object.entries(data).map(([k,v])=>'<tr><th>'+esc(humanLabel(k))+'</th><td>'+esc(humanValue(v,k))+'</td></tr>').join('')+'</tbody></table></div>';$('notes').value=r.notes||'';$('detailActions').innerHTML='<button type="button" class="secondary" id="downloadExcel">Scarica Piano Sanitario Excel</button> &nbsp; <a href="/api/requests/'+id+'/data" target="_blank">Esporta dati JSON</a><p><button id="approve">Approva richiesta</button> <button id="sendmail" class="secondary">Invia / reinvia email</button></p>';$('downloadExcel').onclick=()=>downloadExcel(id);if(!currentUser.is_admin){$('approve').remove();$('notes').disabled=true}$('approve')?.addEventListener('click',async()=>{if(!confirm('Confermi approvazione amministrativa della richiesta? Il file richiede comunque la verifica sanitaria competente.'))return;try{await api('/requests/'+id+'/approve','POST',{notes:$('notes').value});msg('Stato aggiornato.');refresh();openDetail(id)}catch(e){msg(e.message,true)}});$('sendmail').onclick=async()=>{if(!confirm('Inviare il piano Excel ai destinatari configurati?'))return;try{let x=await api('/requests/'+id+'/send-email','POST',{});msg('Notifica CRI: '+mailStatus(x.status),x.status!=='sent');refresh();openDetail(id)}catch(e){msg(e.message,true)}};const archive=document.createElement('button');archive.type='button';archive.className='secondary';archive.textContent=r.archived_at?'Ripristina richiesta':'Archivia richiesta';archive.onclick=async()=>{const archiveIt=!r.archived_at;if(!confirm(archiveIt?'Spostare questa richiesta in Archiviate? I dati verranno conservati.':'Riportare questa richiesta nell’elenco attivo?'))return;try{await api('/requests/'+id+'/archive?archived='+archiveIt,'POST',{});$('detailPanel').classList.add('hidden');msg(archiveIt?'Richiesta archiviata.':'Richiesta ripristinata.');refresh()}catch(e){msg(e.message,true)}};$('detailActions').appendChild(archive);$('detailPanel').scrollIntoView({behavior:'smooth'})}catch(e){msg(e.message,true)}}
 async function loadMail(){try{
  const cfg=await api('/settings/mail');
  const chosen=new Set(cfg.recipient_user_ids);
