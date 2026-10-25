@@ -220,8 +220,8 @@ def test_generated_xlsx_package_integrity_and_internals():
 def test_generated_xlsx_removes_forbidden_xml_characters():
     from app.excel import _xml_safe
     sample=VALUES.copy()
-    sample['event_description']='Incontro pubblico\\x00 con accesso libero\\x0b e notes'
-    sample['additional_notes']='Esempio\\x0e & speciale < &'
+    sample['event_description']='Incontro pubblico'+chr(0)+' con accesso libero'+chr(11)+' e notes'
+    sample['additional_notes']='Esempio'+chr(14)+' & speciale < &'
     out=render_excel(TEMPLATE,sample)
     assert b'PK\x03\x04'==out[:4]
     with ZipFile(io.BytesIO(out)) as f:
@@ -230,4 +230,4 @@ def test_generated_xlsx_removes_forbidden_xml_characters():
                 ET.fromstring(f.read(name))
         sheet=f.read('xl/worksheets/sheet1.xml').decode('utf-8')
         assert 'Incontro pubblico con accesso libero' not in sheet  # whitespace preserved
-        assert '\\x00' not in _xml_safe(sample['event_description'])
+        assert chr(0) not in _xml_safe(sample['event_description'])
