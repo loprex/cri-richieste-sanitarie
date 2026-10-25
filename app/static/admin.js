@@ -1,11 +1,32 @@
-const FIELD_LABELS={org_name:'Ragione sociale / Ente organizzatore',org_contact:'Nome e cognome referente',org_address:'Indirizzo sede legale',org_tax_code:'Codice fiscale',org_vat:'Partita IVA',org_sdi:'Codice destinatario SDI',org_phone:'Telefono organizzatore',org_email:'Email organizzatore',org_pec:'PEC organizzatore',event_name:'Nome Evento / Società organizzatrice',event_dates:'Data / periodo evento',event_time:'Orario evento',event_place:'Luogo evento',event_description:'Descrizione evento',reference_name:'Referente sul posto',reference_phone:'Cellulare referente',participants_public:'Pubblico / spettatori / visitatori previsti',participants_athletes:'Partecipanti attivi previsti',road_closure:'Modifiche alla viabilità',additional_notes:'Note organizzative'};
+const FIELD_LABELS={org_name:'Ragione sociale / Ente organizzatore',org_contact:'Nome e cognome referente',org_address:'Indirizzo sede legale',org_tax_code:'Codice fiscale',org_vat:'Partita IVA',org_sdi:'Codice destinatario SDI',org_phone:'Telefono organizzatore',org_email:'Email organizzatore',org_pec:'PEC organizzatore',event_name:'Nome Evento / Società organizzatrice',event_dates:'Data / periodo evento',event_time:'Orario evento',event_place:'Luogo evento',event_description:'Descrizione evento',reference_name:'Referente sul posto',reference_phone:'Cellulare referente',participants_public:'Pubblico / spettatori / visitatori previsti',participants_athletes:'Partecipanti attivi previsti',road_closure:'Modifiche alla viabilità',additional_notes:'Note organizzative',event_slots:'Date e fasce orarie',org_first_name:'Nome referente organizzatore',org_last_name:'Cognome referente organizzatore',event_city:'Città evento',children:'Bambini',elderly:'Anziani',disabled:'Persone con disabilità',recurrence:'Frequenza evento',event_type:'Tipologia evento',location_type:'Caratteristiche luogo',venue_context:'Contesto geografico',venue_features:'Caratteristiche del luogo',venue_logistics:'Logistica',crowd_age_profile:'Età prevalente',crowd_density:'Densità pubblico',crowd_mood:'Condizione del pubblico',crowd_position:'Posizione dei partecipanti',event_pause:'Pause evento',event_duration_bracket:'Durata evento',road_documents:'Documentazione viabilità',involved_entities:'Enti coinvolti',involved_entities_other:'Altro ente',risk_options:'Fattori di rischio',participants_estimate_bracket:'Stima partecipanti',privacy_ack:'Informativa presa visione',declaration:'Dichiarazione di correttezza'};
 const STATUS_LABELS={draft:'Da compilare',pending:'Da compilare',submitted:'Ricevuta – da verificare',approved:'Approvata dalla CRI',expired:'Scaduta',cancelled:'Annullata'};
 function humanLabel(k){return FIELD_LABELS[k]||k.replace(/_/g,' ').replace(/^./,c=>c.toUpperCase())}
 function humanStatus(s){return STATUS_LABELS[s]||s}
 const MAIL_STATUS={disabled:'Invio automatico disattivato',no_recipients:'Nessun destinatario valido',smtp_not_configured:'SMTP non configurato',smtp_send_failed:'Errore SMTP',excel_generation_failed:'Errore nella generazione Excel',not_submitted:'Richiesta non ancora compilata',already_sent:'Già inviata',sent:'Email accettata dal server SMTP',failed:'Invio fallito'};
 function mailStatus(code){return MAIL_STATUS[code]||code||'Non inviata'}
 function roleLabel(role){return ({operator:'Utente operatore',admin:'Admin',superadmin:'Super Admin'})[role]||'Ruolo non riconosciuto'}
-function humanValue(v){return v==null||v===''?'Non indicato':Array.isArray(v)?v.join(', '):typeof v==='boolean'?(v?'Sì':'No'):String(v)}
+function formatEventSlot(slot){
+ if(!slot||typeof slot!=='object')return slot==null?'':String(slot);
+ const d=String(slot.date||'');
+ const date=/^\d{4}-\d{2}-\d{2}$/.test(d)?d.split('-').reverse().join('/'):d;
+ const start=String(slot.start||'');
+ const end=String(slot.end||'');
+ return [date,[start,end].filter(Boolean).join('–')].filter(Boolean).join(' dalle ');
+}
+function humanValue(v,k=''){
+ if(v===null||v===undefined||v==='')return 'Non indicato';
+ if(Array.isArray(v)){
+  if(!v.length)return 'Nessuno';
+  return v.map(item=>{
+   if(k==='event_slots')return formatEventSlot(item);
+   if(item&&typeof item==='object')return Object.entries(item).map(([key,value])=>key+': '+humanValue(value)).join(', ');
+   return String(item);
+  }).join('; ');
+ }
+ if(typeof v==='boolean')return v?'Sì':'No';
+ if(typeof v==='object')return Object.entries(v).map(([key,value])=>key+': '+humanValue(value)).join('; ');
+ return String(v);
+}
 let csrf='';let selected=0;let currentFilter='all';let currentUser={email:'',legacy_login:'',is_admin:false,role:'operator',can_delete_accounts:false};let deletingAccount=null;const $=id=>document.getElementById(id);const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function msg(s,bad=false){$('notice').className='notice '+(bad?'err':'good');$('notice').textContent=s;window.scrollTo({top:0,behavior:'smooth'})}
 async function api(path,method='GET',body){let r=await fetch('/api'+path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json','x-cri-csrf':csrf},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok){let e;try{e=(await r.json()).detail}catch{e=r.statusText}throw new Error(typeof e==='string'?e:JSON.stringify(e))}return r.json()}
@@ -101,7 +122,39 @@ async function refresh(){try{
 }catch(e){msg(e.message,true)}}
 document.querySelectorAll('.filterView').forEach(b=>b.onclick=()=>{currentFilter=b.dataset.filter;$('detailPanel').classList.add('hidden');refresh()});
 $('refresh').onclick=refresh;
-async function openDetail(id){try{let r=await api('/requests/'+id);selected=id;const data=r.data;const emailState=r.mailed_at?'Email inviata il '+formatDate(r.mailed_at):mailStatus(r.mail_error);$('detailPanel').classList.remove('hidden');$('detail').innerHTML='<p><b>Stato:</b> '+esc(humanStatus(r.status))+' • <b>Email:</b> '+esc(r.customer_email)+'</p><p><b>Notifica CRI:</b> '+esc(emailState)+'</p><p><b>Evento:</b> '+esc(r.planned_event_name||data.event_name||'—')+' • <b>Città:</b> '+esc(r.planned_event_city||data.event_city||'—')+'</p><p><b>Protocollo interno:</b> '+esc(r.protocol_number||'Non ancora assegnato')+' • <b>Data:</b> '+esc(formatDate(r.protocol_at))+'</p><div class="gridtable"><table><tbody>'+Object.entries(data).map(([k,v])=>'<tr><th>'+esc(humanLabel(k))+'</th><td>'+esc(humanValue(v))+'</td></tr>').join('')+'</tbody></table></div>';$('notes').value=r.notes||'';$('detailActions').innerHTML='<a href="/api/requests/'+id+'/excel" target="_blank">Scarica Piano Sanitario Excel</a> &nbsp; <a href="/api/requests/'+id+'/data" target="_blank">Esporta dati JSON</a><p><button id="approve">Approva richiesta</button> <button id="sendmail" class="secondary">Invia / reinvia email</button></p>';if(!currentUser.is_admin){$('approve').remove();$('notes').disabled=true}$('approve')?.addEventListener('click',async()=>{if(!confirm('Confermi approvazione amministrativa della richiesta? Il file richiede comunque la verifica sanitaria competente.'))return;try{await api('/requests/'+id+'/approve','POST',{notes:$('notes').value});msg('Stato aggiornato.');refresh();openDetail(id)}catch(e){msg(e.message,true)}});$('sendmail').onclick=async()=>{if(!confirm('Inviare il piano Excel ai destinatari configurati?'))return;try{let x=await api('/requests/'+id+'/send-email','POST',{});msg('Notifica CRI: '+mailStatus(x.status),x.status!=='sent');refresh();openDetail(id)}catch(e){msg(e.message,true)}};const archive=document.createElement('button');archive.type='button';archive.className='secondary';archive.textContent=r.archived_at?'Ripristina richiesta':'Archivia richiesta';archive.onclick=async()=>{const archiveIt=!r.archived_at;if(!confirm(archiveIt?'Spostare questa richiesta in Archiviate? I dati verranno conservati.':'Riportare questa richiesta nell’elenco attivo?'))return;try{await api('/requests/'+id+'/archive?archived='+archiveIt,'POST',{});$('detailPanel').classList.add('hidden');msg(archiveIt?'Richiesta archiviata.':'Richiesta ripristinata.');refresh()}catch(e){msg(e.message,true)}};$('detailActions').appendChild(archive);$('detailPanel').scrollIntoView({behavior:'smooth'})}catch(e){msg(e.message,true)}}
+async function downloadExcel(id){
+ try{
+  const response=await fetch('/api/requests/'+encodeURIComponent(id)+'/excel',{
+   method:'GET',credentials:'same-origin',cache:'no-store',
+   headers:{'Accept':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}
+  });
+  if(!response.ok){
+   let details='Errore HTTP '+response.status;
+   try{
+    const payload=await response.json();
+    if(typeof payload.detail==='string')details=payload.detail;
+   }catch{}
+   throw new Error(details);
+  }
+  const bytes=await response.arrayBuffer();
+  const magic=new Uint8Array(bytes.slice(0,4));
+  if(magic.length<4||magic[0]!==0x50||magic[1]!==0x4b||magic[2]!==0x03||magic[3]!==0x04)
+   throw new Error('Il server non ha restituito un documento Excel valido (formato ZIP).');
+  const disposition=response.headers.get('Content-Disposition')||'';
+  const match=disposition.match(/filename="?([^";]+)"?/i);
+  const filename=match?match[1]:'piano_sanitario_richiesta_'+id+'.xlsx';
+  const file=new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const url=URL.createObjectURL(file);
+  const link=document.createElement('a');
+  link.href=url;link.download=filename.endsWith('.xlsx')?filename:filename+'.xlsx';
+  document.body.appendChild(link);
+  link.click();link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),30000);
+ }catch(err){
+  msg('Impossibile scaricare il Piano Sanitario Excel: '+err.message,true);
+ }
+}
+async function openDetail(id){try{let r=await api('/requests/'+id);selected=id;const data=r.data;const emailState=r.mailed_at?'Email inviata il '+formatDate(r.mailed_at):mailStatus(r.mail_error);$('detailPanel').classList.remove('hidden');$('detail').innerHTML='<p><b>Stato:</b> '+esc(humanStatus(r.status))+' • <b>Email:</b> '+esc(r.customer_email)+'</p><p><b>Notifica CRI:</b> '+esc(emailState)+'</p><p><b>Evento:</b> '+esc(r.planned_event_name||data.event_name||'—')+' • <b>Città:</b> '+esc(r.planned_event_city||data.event_city||'—')+'</p><p><b>Protocollo interno:</b> '+esc(r.protocol_number||'Non ancora assegnato')+' • <b>Data:</b> '+esc(formatDate(r.protocol_at))+'</p><div class="gridtable"><table><tbody>'+Object.entries(data).map(([k,v])=>'<tr><th>'+esc(humanLabel(k))+'</th><td>'+esc(humanValue(v,k))+'</td></tr>').join('')+'</tbody></table></div>';$('notes').value=r.notes||'';$('detailActions').innerHTML='<button type="button" class="secondary" id="downloadExcel">Scarica Piano Sanitario Excel</button> &nbsp; <a href="/api/requests/'+id+'/data" target="_blank">Esporta dati JSON</a><p><button id="approve">Approva richiesta</button> <button id="sendmail" class="secondary">Invia / reinvia email</button></p>';$('downloadExcel').onclick=()=>downloadExcel(id);if(!currentUser.is_admin){$('approve').remove();$('notes').disabled=true}$('approve')?.addEventListener('click',async()=>{if(!confirm('Confermi approvazione amministrativa della richiesta? Il file richiede comunque la verifica sanitaria competente.'))return;try{await api('/requests/'+id+'/approve','POST',{notes:$('notes').value});msg('Stato aggiornato.');refresh();openDetail(id)}catch(e){msg(e.message,true)}});$('sendmail').onclick=async()=>{if(!confirm('Inviare il piano Excel ai destinatari configurati?'))return;try{let x=await api('/requests/'+id+'/send-email','POST',{});msg('Notifica CRI: '+mailStatus(x.status),x.status!=='sent');refresh();openDetail(id)}catch(e){msg(e.message,true)}};const archive=document.createElement('button');archive.type='button';archive.className='secondary';archive.textContent=r.archived_at?'Ripristina richiesta':'Archivia richiesta';archive.onclick=async()=>{const archiveIt=!r.archived_at;if(!confirm(archiveIt?'Spostare questa richiesta in Archiviate? I dati verranno conservati.':'Riportare questa richiesta nell’elenco attivo?'))return;try{await api('/requests/'+id+'/archive?archived='+archiveIt,'POST',{});$('detailPanel').classList.add('hidden');msg(archiveIt?'Richiesta archiviata.':'Richiesta ripristinata.');refresh()}catch(e){msg(e.message,true)}};$('detailActions').appendChild(archive);$('detailPanel').scrollIntoView({behavior:'smooth'})}catch(e){msg(e.message,true)}}
 async function loadMail(){try{
  const cfg=await api('/settings/mail');
  const chosen=new Set(cfg.recipient_user_ids);
