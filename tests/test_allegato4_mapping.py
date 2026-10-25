@@ -173,3 +173,61 @@ def test_older_submitted_payload_still_parses_and_exports():
     assert old_model.org_contact=='Mario Rossi'
     assert not old_model.venue_features
     assert render_excel(TEMPLATE,old_model.model_dump())
+
+
+def test_generated_xlsx_package_integrity_and_internals():
+    import posixpath
+    generated=render_excel(TEMPLATE,VALUES)
+    assert generated[:4]==b'PK\\x03\\x04'
+    with ZipFile(io.BytesIO(generated)) as book:
+        assert book.testzip() is None
+        members=set(book.namelist())
+        relationships={}
+        for name in members:
+            if name.endswith('.xml') or name.endswith('.rels'):
+                ET.fromstring(book.read(name))
+            if not name.endswith('.rels'):continue
+            root=ET.fromstring(book.read(name))
+            if name=='_rels/.rels':
+                owner_dir=''
+            else:
+                containing=name.rsplit('/_rels/',1)
+                owner_dir=containing[0]+'/' if len(containing)>1 else ''
+            for rel in root:
+                target=rel.attrib.get('Target','')
+                if rel.attrib.get('TargetMode')=='External':continue
+                resolved=(target.lstrip('/') if target.startswith('/') else
+                          posixpath.normpath(posixpath.join(owner_dir,target)))
+                # Original workbook may contain non-critical compatibility
+                # links, but all targets in our generated workbook must exist.
+                assert resolved in members,(name,target,resolved)
+                relationships[rel.attrib.get('Id')]=resolved
+        assert 'xl/workbook.xml' in members
+        wb=ET.fromstring(book.read('xl/workbook.xml'))
+        main='{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+        reltag='{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
+        sheets=wb.find(main+'sheets')
+        assert sheets is not None
+        names=[node.attrib.get('name') for node in sheets]
+        assert 'Dati compilazione' in names
+        refs=[node.attrib.get(reltag+'id') for node in sheets]
+        assert len(refs)==len(set(refs))
+        rel_root=ET.fromstring(book.read('xl/_rels/workbook.xml.rels'))
+        wb_rels={node.attrib['Id']:node.attrib.get('Target') for node in rel_root}
+        assert all(ref in wb_rels for ref in refs)
+
+
+def test_generated_xlsx_removes_forbidden_xml_characters():
+    from app.excel import _xml_safe
+    sample=VALUES.copy()
+    sample['event_description']='Incontro pubblico\\x00 con accesso libero\\x0b e notes'
+    sample['additional_notes']='Esempio\\x0e & speciale < &'
+    out=render_excel(TEMPLATE,sample)
+    assert b'PK\\x03\\x04'==out[:4]
+    with ZipFile(io.BytesIO(out)) as f:
+        for name in f.namelist():
+            if name.endswith('.xml'):
+                ET.fromstring(f.read(name))
+        sheet=f.read('xl/worksheets/sheet1.xml').decode('utf-8')
+        assert 'Incontro pubblico con accesso libero' not in sheet  # whitespace preserved
+        assert '\\x00' not in _xml_safe(sample['event_description'])
