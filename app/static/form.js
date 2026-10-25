@@ -4,6 +4,8 @@ let reusedData=false;
 const reuseNames={
  org_name:'Ragione sociale / Ente',
  org_contact:'Nome e cognome referente',
+ org_first_name:'Nome referente',
+ org_last_name:'Cognome referente',
  org_address:'Indirizzo sede legale',
  org_tax_code:'Codice fiscale',
  org_vat:'Partita IVA',
@@ -26,11 +28,22 @@ const reuseNames={
  elderly:'Anziani',
  disabled:'Persone con disabilità',
  risk_options:'Fattori di rischio',
+ event_pause:'Pause evento',
+ road_documents:'Documentazione viabilità',
+ venue_context:'Ambiente e territorio',
+ venue_features:'Caratteristiche luogo',
+ venue_logistics:'Logistica',
+ crowd_age_profile:'Età prevalente',
+ crowd_density:'Densità del pubblico',
+ crowd_mood:'Condizione del pubblico',
+ crowd_position:'Posizione pubblico',
+ involved_entities:'Altri enti coinvolti',
+ involved_entities_other:'Altro ente',
  additional_notes:'Altre note'
 };
 const reuseFieldGroups=[
- {title:'Dati organizzatore',keys:['org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_pec']},
- {title:'Dati evento',keys:['event_name','event_city','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','risk_options','additional_notes']}
+ {title:'Dati organizzatore',keys:['org_name','org_contact','org_first_name','org_last_name','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_pec']},
+ {title:'Dati evento',keys:['event_name','event_city','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','risk_options','event_pause','road_documents','venue_context','venue_features','venue_logistics','crowd_age_profile','crowd_density','crowd_mood','crowd_position','involved_entities','involved_entities_other','additional_notes']}
 ];
 const historyChoices=[...document.querySelectorAll('input[name=historyMode]')];
 function setHistoryMode(mode){
@@ -175,9 +188,8 @@ document.getElementById('reuseEvent').onclick=()=>{
  if(!source){status.textContent='L’evento selezionato non è più disponibile.';return}
  for(const [key,value] of Object.entries(source.data||{})){
   if(!selected.has(key)||value===null||value===undefined||value==='')continue;
-  if(key==='risk_options'){
-   document.querySelectorAll('[name=risk_options]').forEach(box=>
-     box.checked=Array.isArray(value)&&value.includes(box.value));
+  if(multiChoiceNames.includes(key)){
+   setCheckboxes(key,value);
    count++;continue;
   }
   const target=form.elements[key];
@@ -185,6 +197,20 @@ document.getElementById('reuseEvent').onclick=()=>{
   target.value=typeof value==='boolean'?String(value):value;
   count++;
  }
+ if(selected.has('risk_options') && source.data && Array.isArray(source.data.risk_options)
+    && !Array.isArray(source.data.involved_entities)){
+   const legacy=['Protezione civile','Vigili del fuoco','Forze dell’ordine'];
+   setCheckboxes('involved_entities',source.data.risk_options.filter(x=>legacy.includes(x)));
+ }
+ // Historical records may only include the combined contact field.
+ // Prefill the split inputs as a suggestion and require manual confirmation.
+ if(selected.has('org_contact') && source.data && source.data.org_contact &&
+    !source.data.org_first_name && !source.data.org_last_name){
+   const words=source.data.org_contact.trim().split(/\s+/);
+   form.elements.org_first_name.value=words.length>1?words.slice(0,-1).join(' '):words[0];
+   form.elements.org_last_name.value=words.length>1?words[words.length-1]:'';
+ }
+ syncOrgContact();updateRoadDocumentation();
  reusedData=count>0;
  status.textContent=count
    ?'Dati copiati nel modulo: verifica ragione sociale, contatti, codice fiscale, partita IVA e tutti i dati dell’evento. L’email dell’invito è rimasta invariata. Inserisci nuove date e orari.'
@@ -327,10 +353,48 @@ enableAddressAutocomplete(form.elements.org_address,
 enableAddressAutocomplete(form.elements.event_place,
   document.getElementById('placeSuggestions'),
   document.getElementById('placeStatus'));
-const fields=['org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_email','org_pec' ,'event_name','event_city','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','additional_notes'];const risks=['Prevista vendita/consumo di alcool','Possibile consumo di droghe','Presenza categorie fragili','Evento ampiamente pubblicizzato','Presenza figure politiche/religiose','Possibili difficoltà nella viabilità','Tensioni socio-politiche','Ambiente acquatico','Palco o ponteggio temporaneo','Presenza di recinzioni','Servizi igienici','Disponibilità acqua','Protezione civile','Vigili del fuoco','Forze dell’ordine'];document.getElementById('risks').innerHTML=risks.map((r,i)=>'<label class="check"><input type="checkbox" name="risk_options" value="'+r+'">'+r+'</label>').join('');function message(m,bad=false){notice.className='notice '+(bad?'err':'good');notice.textContent=m;window.scrollTo({top:0,behavior:'smooth'})}async function init(){try{const r=await fetch('/api/r/'+token);if(!r.ok)throw Error('Link non valido, scaduto o già chiuso');const x=await r.json();if(x.status==='submitted'||x.status==='approved'){form.classList.add('hidden');message('Questa richiesta è già stata inviata e non può essere riutilizzata.');return}form.elements.org_email.value=x.customer_email||'';form.elements.event_name.value=x.event_name||'';form.elements.event_city.value=x.event_city||'';loadPreviousEvents();if(x.status==='draft'){if(Array.isArray(x.data.event_slots)&&x.data.event_slots.length){slotContainer.replaceChildren();x.data.event_slots.forEach(x=>addSlot(x.date,x.start,x.end))}for(const [k,v]of Object.entries(x.data)){if(k==='risk_options'){document.querySelectorAll('[name=risk_options]').forEach(c=>c.checked=v.includes(c.value))}else if(form.elements[k]){if(form.elements[k].type==='checkbox')form.elements[k].checked=!!v;else form.elements[k].value=v}}}}catch(err){form.classList.add('hidden');message(err.message,true)}}form.onsubmit=async e=>{e.preventDefault();
+const fields=['org_name','org_contact','org_first_name','org_last_name','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_email','org_pec' ,'event_name','event_city','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','road_documents','event_pause','crowd_age_profile','crowd_density','crowd_mood','crowd_position','involved_entities_other','additional_notes'];const risks=['Prevista vendita/consumo di alcool','Possibile consumo di droghe','Presenza categorie fragili','Evento ampiamente pubblicizzato','Presenza figure politiche/religiose','Possibili difficoltà nella viabilità','Tensioni socio-politiche','Ambiente acquatico','Palco o ponteggio temporaneo','Presenza di recinzioni','Servizi igienici','Disponibilità acqua'];document.getElementById('risks').innerHTML=risks.map((r,i)=>'<label class="check"><input type="checkbox" name="risk_options" value="'+r+'">'+r+'</label>').join('');const checkboxOptionGroups={
+ venue_context:{id:'venueContextChoices',values:['In città','In periferia/paesi o piccoli centri urbani','In ambiente acquatico (lago, fiume, mare, piscina)','Altro (montano, impervio o rurale)']},
+ venue_features:{id:'venueFeaturesChoices',values:['Al coperto',"All'aperto",'Localizzato e ben definito','Esteso oltre un campo da calcio','Non delimitato da recinzioni','Delimitato da recinzioni','Presenza di scale in entrata e/o uscita','Recinzioni temporanee','Ponteggio temporaneo, palco o coperture','Percorso isolato','Percorso su strada']},
+ venue_logistics:{id:'venueLogisticsChoices',values:['Servizi igienici disponibili',"Disponibilità d'acqua",'Punto di ristoro']},
+ involved_entities:{id:'involvedEntitiesChoices',values:['Protezione civile','Vigili del fuoco','Forze dell’ordine','Altro']}
+};
+const multiChoiceNames=['risk_options',...Object.keys(checkboxOptionGroups)];
+for(const [name,group] of Object.entries(checkboxOptionGroups)){
+ const container=document.getElementById(group.id);
+ for(const value of group.values){
+  const label=document.createElement('label');label.className='check';
+  const input=document.createElement('input');input.type='checkbox';input.name=name;input.value=value;
+  label.append(input,document.createTextNode(' '+value));container.append(label);
+ }
+}
+function setCheckboxes(name,values){
+ const selected=new Set(Array.isArray(values)?values:[]);
+ document.querySelectorAll('[name="'+name+'"]').forEach(box=>box.checked=selected.has(box.value));
+}
+function checkedChoices(name){
+ return [...document.querySelectorAll('[name="'+name+'"]:checked')].map(box=>box.value);
+}
+function syncOrgContact(){
+ const first=form.elements.org_first_name.value.trim();
+ const last=form.elements.org_last_name.value.trim();
+ if(first&&last)form.elements.org_contact.value=first+' '+last;
+}
+function updateRoadDocumentation(){
+ const onRoad=form.elements.road_closure.value==='true' ||
+  form.elements.location_type.value==='Percorso su strada' ||
+  checkedChoices('venue_features').includes('Percorso su strada');
+ document.getElementById('roadDocumentsField').classList.toggle('hidden',!onRoad);
+ form.elements.road_documents.required=onRoad;
+}
+form.elements.road_closure.addEventListener('change',updateRoadDocumentation);
+form.elements.location_type.addEventListener('change',updateRoadDocumentation);
+document.getElementById('venueFeaturesChoices').addEventListener('change',updateRoadDocumentation);
+updateRoadDocumentation();
+function message(m,bad=false){notice.className='notice '+(bad?'err':'good');notice.textContent=m;window.scrollTo({top:0,behavior:'smooth'})}async function init(){try{const r=await fetch('/api/r/'+token);if(!r.ok)throw Error('Link non valido, scaduto o già chiuso');const x=await r.json();if(x.status==='submitted'||x.status==='approved'){form.classList.add('hidden');message('Questa richiesta è già stata inviata e non può essere riutilizzata.');return}form.elements.org_email.value=x.customer_email||'';form.elements.event_name.value=x.event_name||'';form.elements.event_city.value=x.event_city||'';loadPreviousEvents();if(x.status==='draft'){if(Array.isArray(x.data.event_slots)&&x.data.event_slots.length){slotContainer.replaceChildren();x.data.event_slots.forEach(x=>addSlot(x.date,x.start,x.end))}for(const [k,v]of Object.entries(x.data)){if(multiChoiceNames.includes(k)){setCheckboxes(k,v)}else if(form.elements[k]){if(form.elements[k].type==='checkbox')form.elements[k].checked=!!v;else form.elements[k].value=v}}}if(x.status==='draft'&&Array.isArray(x.data.risk_options)&&!Array.isArray(x.data.involved_entities)){setCheckboxes('involved_entities',x.data.risk_options.filter(k=>['Protezione civile','Vigili del fuoco','Forze dell’ordine'].includes(k)))}if(x.status==='draft'&&x.data.org_contact&&!x.data.org_first_name){const words=x.data.org_contact.trim().split(/\s+/);form.elements.org_first_name.value=words.length>1?words.slice(0,-1).join(' '):words[0];form.elements.org_last_name.value=words.length>1?words[words.length-1]:''}updateRoadDocumentation()}catch(err){form.classList.add('hidden');message(err.message,true)}}form.onsubmit=async e=>{e.preventDefault();
  const submit=e.submitter||form.querySelector('[type=submit]');
  if(submit?.disabled)return;
-if(!confirm('Confermi invio definitivo? Dopo l’invio non potrai modificare la richiesta con questo link.'))return;if(!validateTax()){form.reportValidity();return}let slots;try{slots=readSlots()}catch(err){message(err.message,true);return}const values={event_slots:slots,event_dates:slots.map(x=>x.date).join(', '),event_time:slots.map(x=>x.date+' '+x.start+'–'+x.end).join('; ')};for(const k of fields){let el=form.elements[k];values[k]=el.value}for(const k of ['participants_athletes','participants_public','children','elderly','disabled'])values[k]=Number(values[k]||0);values.road_closure=values.road_closure==='true';values.risk_options=[...form.querySelectorAll('[name=risk_options]:checked')].map(x=>x.value);values.privacy_ack=form.elements.privacy_ack.checked;values.declaration=form.elements.declaration.checked;if(submit){submit.disabled=true;submit.textContent='Invio in corso…'}
+if(!confirm('Confermi invio definitivo? Dopo l’invio non potrai modificare la richiesta con questo link.'))return;if(!validateTax()){form.reportValidity();return}syncOrgContact();updateRoadDocumentation();if(!form.reportValidity())return;let slots;try{slots=readSlots()}catch(err){message(err.message,true);return}const values={event_slots:slots,event_dates:slots.map(x=>x.date).join(', '),event_time:slots.map(x=>x.date+' '+x.start+'–'+x.end).join('; ')};for(const k of fields){let el=form.elements[k];values[k]=el.value}for(const k of ['participants_athletes','participants_public','children','elderly','disabled'])values[k]=Number(values[k]||0);values.road_closure=values.road_closure==='true';for(const name of multiChoiceNames)values[name]=checkedChoices(name);values.privacy_ack=form.elements.privacy_ack.checked;values.declaration=form.elements.declaration.checked;if(submit){submit.disabled=true;submit.textContent='Invio in corso…'}
 try{const r=await fetch('/api/r/'+encodeURIComponent(token),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});if(!r.ok){
  const j=await r.json().catch(()=>({}));
  const details=Array.isArray(j.detail)?j.detail.map(x=>((x.loc||[]).slice(-1)[0]||'Campo')+': '+x.msg).join('; '):j.detail;

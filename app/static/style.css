@@ -142,3 +142,10 @@
 .mail-recipient span{min-width:0;overflow-wrap:anywhere}
 .mail-recipient strong,.mail-recipient small{display:block}
 .mail-recipient small{color:#586473;margin-top:3px;font-size:13px}
+
+/* Allegato 4: readable multiselects on desktop and mobile. */
+.choice-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 16px;margin-top:7px}
+.choice-grid .check{margin:0;min-height:40px;padding:8px 10px;border-radius:9px;border:1px solid #e0e5eb;background:#fafbfc;align-items:flex-start;line-height:1.45;cursor:pointer}
+.choice-grid .check:has(input:checked){border-color:#c8102e;background:#fff6f7}
+.choice-grid .check input{width:18px;height:18px;flex:0 0 18px;margin:1px 0 0;accent-color:#c8102e}
+@media(max-width:660px){.choice-grid{grid-template-columns:1fr}}

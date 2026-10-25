@@ -12,5 +12,6 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements-test.txt
+      - run: node --check app/static/form.js
       - run: python -m pytest -q tests/
 
