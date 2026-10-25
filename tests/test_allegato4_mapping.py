@@ -100,7 +100,7 @@ def test_export_preserves_original_files_formulas_and_main_sheet():
 
 def test_new_structured_risks_feed_existing_known_excel_flags():
     cells=input_cells(VALUES)
-    assert cells['I130']==('text','x')  # previously selected category
+    assert 'I130' not in cells  # temporary fencing must map to I132, not I130
     assert cells['I133']==('text','x')  # stage
     assert cells['I134']==('text','x')  # bathrooms
     assert cells['I135']==('text','x')  # drinking water
@@ -110,7 +110,7 @@ def test_new_structured_risks_feed_existing_known_excel_flags():
     assert cells['I107']==('text','x')  # sport
     assert cells['I118']==('text','x')  # duration
     assert cells['I121']==('text','x')  # in city
-    assert cells['I132']==('text','x')  # temporary fences (not J130)
+    assert cells['I132']==('text','x')  # temporary fences (not I130)
     assert cells['I136']==('text','x')  # refreshment point
     assert cells['I138']==('text','x')  # estimated crowd
     assert cells['I142']==('text','x')  # audience age
