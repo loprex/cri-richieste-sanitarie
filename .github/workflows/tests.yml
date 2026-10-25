@@ -13,5 +13,7 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements-test.txt
       - run: node --check app/static/form.js
+      - run: node --check app/static/admin.js
+      - run: node tests/test_admin_display.cjs
       - run: python -m pytest -q tests/
 
