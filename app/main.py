@@ -361,6 +361,8 @@ class Submission(BaseModel):
     event_slots:list[EventSlot]=Field(default_factory=list,max_length=60)
     org_name:str=Field(min_length=2,max_length=220)
     org_contact:str=Field(min_length=2,max_length=220)
+    org_first_name:str=Field(default='',max_length=120)
+    org_last_name:str=Field(default='',max_length=120)
     org_address:str=Field(min_length=5,max_length=400)
     org_tax_code:str=Field(default='',max_length=32)
     org_vat:str=Field(default='',max_length=32)
@@ -382,6 +384,19 @@ class Submission(BaseModel):
     elderly:int=Field(default=0,ge=0,le=5000000)
     disabled:int=Field(default=0,ge=0,le=5000000)
     road_closure:bool=False
+    road_documents:str=Field(default='',max_length=500)
+    event_pause:str=Field(default='',max_length=500)
+    venue_context:list[str]=Field(default_factory=list,max_length=8)
+    venue_features:list[str]=Field(default_factory=list,max_length=20)
+    venue_logistics:list[str]=Field(default_factory=list,max_length=10)
+    crowd_age_profile:str=Field(default='',max_length=120)
+    crowd_density:str=Field(default='',max_length=120)
+    crowd_mood:str=Field(default='',max_length=120)
+    crowd_position:str=Field(default='',max_length=120)
+    involved_entities:list[str]=Field(default_factory=list,max_length=10)
+    involved_entities_other:str=Field(default='',max_length=200)
+    event_duration_bracket:str=Field(default='',max_length=40)
+    participants_estimate_bracket:str=Field(default='',max_length=40)
     location_type:str=Field(default='',max_length=100)
     event_type:str=Field(default='',max_length=120)
     recurrence:str=Field(default='',max_length=120)
@@ -395,6 +410,21 @@ class Submission(BaseModel):
             raise ValueError('Codice fiscale non valido')
         if self.org_vat and not check_vat(self.org_vat):
             raise ValueError('Partita IVA non valida')
+        if self.org_first_name and self.org_last_name:
+            self.org_contact=f'{self.org_first_name.strip()} {self.org_last_name.strip()}'
+        if self.event_slots:
+            from datetime import datetime as _datetime
+            boundaries=sorted(
+                (_datetime.fromisoformat(f'{s.date}T{s.start}'),
+                 _datetime.fromisoformat(f'{s.date}T{s.end}'))
+                for s in self.event_slots)
+            span_hours=(max(end for _,end in boundaries)-min(start for start,_ in boundaries)).total_seconds()/3600
+            self.event_duration_bracket=('<12 ore' if span_hours<12 else
+                '12 ore - 3 giorni' if span_hours<=72 else '>3 giorni')
+        total=self.participants_athletes+self.participants_public
+        self.participants_estimate_bracket=('<25.000' if total<25000 else
+            '25.000-100.000' if total<100000 else
+            '100.000-500.000' if total<=500000 else '>500.000')
         if self.event_slots:
             self.event_dates=', '.join(slot.date for slot in self.event_slots)
             self.event_time='; '.join(f'{slot.date} {slot.start}-{slot.end}' for slot in self.event_slots)
@@ -1028,12 +1058,15 @@ def external(token:str,request:Request):
 # The form explicitly lets the recipient select organization and event details.
 # Never reuse invitation email, old event dates, old consent or internal protocol.
 REUSABLE_EVENT_FIELDS=(
- 'org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi',
+ 'org_name','org_contact','org_first_name','org_last_name','org_address','org_tax_code','org_vat','org_sdi',
  'org_phone','org_pec',
  'event_name','event_city','event_place','event_description',
  'reference_name','reference_phone','event_type','recurrence','location_type',
  'road_closure','participants_athletes','participants_public','children','elderly',
- 'disabled','risk_options','additional_notes')
+ 'disabled','risk_options','event_pause','road_documents','venue_context',
+ 'venue_features','venue_logistics','crowd_age_profile','crowd_density',
+ 'crowd_mood','crowd_position','involved_entities','involved_entities_other',
+ 'additional_notes')
 def previous_event_years(data:dict,submitted_at:str|None)->tuple[list[int],str]:
     """Use years in event dates. Legacy records without dates fall back to submission year."""
     years=set()
