@@ -78,17 +78,17 @@ def test_export_preserves_original_files_formulas_and_main_sheet():
         after=output.read('xl/worksheets/sheet1.xml')
         assert before.count(b'<f')==after.count(b'<f')
         assert before.count(b'</f>')==after.count(b'</f>')
-        # The I column contains weights (including negative protective factors).
-        # A client answer must only ever change column J, never the weights.
+        # The J column contains score formulas (including negative protective factors).
+        # A client answer must only ever change I (to 'x'), never formula column J.
         ns={'x':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
         original_sheet=ET.fromstring(before)
         exported_sheet=ET.fromstring(after)
         for row in range(102,154):
-            path=f".//x:c[@r='I{row}']"
+            path=f".//x:c[@r='J{row}']"
             before_cell=original_sheet.find(path,ns)
             after_cell=exported_sheet.find(path,ns)
             if before_cell is not None:
-                assert ET.tostring(before_cell)==ET.tostring(after_cell),f'I{row}'
+                assert ET.tostring(before_cell)==ET.tostring(after_cell),f'J{row}'
 
         # Numeric data and reviewed mappings still populate the original layout.
         sheet=ET.fromstring(after)
@@ -100,27 +100,27 @@ def test_export_preserves_original_files_formulas_and_main_sheet():
 
 def test_new_structured_risks_feed_existing_known_excel_flags():
     cells=input_cells(VALUES)
-    assert cells['J130']==('number',1)  # temporary fencing
-    assert cells['J133']==('number',1)  # stage
-    assert cells['J134']==('number',1)  # bathrooms
-    assert cells['J135']==('number',1)  # drinking water
-    assert cells['J112']==('number',1)  # drugs
+    assert cells['I130']==('text','x')  # previously selected category
+    assert cells['I133']==('text','x')  # stage
+    assert cells['I134']==('text','x')  # bathrooms
+    assert cells['I135']==('text','x')  # drinking water
+    assert cells['I112']==('text','x')  # drugs
     assert cells['G43']==('text','X')   # road modification
-    assert cells['J102']==('number',1)  # yearly recurrence
-    assert cells['J107']==('number',1)  # sport
-    assert cells['J118']==('number',1)  # duration
-    assert cells['J121']==('number',1)  # in city
-    assert cells['J132']==('number',1)  # temporary fences (not J130)
-    assert cells['J136']==('number',1)  # refreshment point
-    assert cells['J138']==('number',1)  # estimated crowd
-    assert cells['J142']==('number',1)  # audience age
-    assert cells['J145']==('number',1)  # medium crowd density
-    assert cells['J148']==('number',1)  # relaxed
-    assert cells['J153']==('number',1)  # standing
+    assert cells['I102']==('text','x')  # yearly recurrence
+    assert cells['I107']==('text','x')  # sport
+    assert cells['I118']==('text','x')  # duration
+    assert cells['I121']==('text','x')  # in city
+    assert cells['I132']==('text','x')  # temporary fences (not J130)
+    assert cells['I136']==('text','x')  # refreshment point
+    assert cells['I138']==('text','x')  # estimated crowd
+    assert cells['I142']==('text','x')  # audience age
+    assert cells['I145']==('text','x')  # medium crowd density
+    assert cells['I148']==('text','x')  # relaxed
+    assert cells['I153']==('text','x')  # standing
     assert cells['H96']==('text','X')   # street venue
     assert cells['B99']==('text','<12 ore')
     assert cells['G99']==('text','Pausa pranzo 13:00-14:00')
-    assert all(not key.startswith('I1') or key=='I43' for key in cells)
+    assert all(not key.startswith('J1') for key in cells)
 
 
 
