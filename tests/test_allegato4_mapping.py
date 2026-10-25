@@ -51,6 +51,8 @@ def test_export_contains_every_organizer_field_without_dropping_values():
     with ZipFile(io.BytesIO(generated)) as z:
         workbook=z.read('xl/workbook.xml').decode()
         assert 'Dati compilazione' in workbook
+        assert 'fullCalcOnLoad="1"' in workbook
+        assert 'forceFullCalc="1"' in workbook
         attached=[n for n in z.namelist() if n.startswith('xl/worksheets/sheet') and n.endswith('.xml')]
         assert len(attached)>=2
         supplemental=z.read(attached[-1]).decode()
