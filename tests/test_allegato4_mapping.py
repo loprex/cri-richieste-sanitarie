@@ -178,7 +178,7 @@ def test_older_submitted_payload_still_parses_and_exports():
 def test_generated_xlsx_package_integrity_and_internals():
     import posixpath
     generated=render_excel(TEMPLATE,VALUES)
-    assert generated[:4]==b'PK\\x03\\x04'
+    assert generated[:4]==b'PK\x03\x04'
     with ZipFile(io.BytesIO(generated)) as book:
         assert book.testzip() is None
         members=set(book.namelist())
@@ -223,7 +223,7 @@ def test_generated_xlsx_removes_forbidden_xml_characters():
     sample['event_description']='Incontro pubblico\\x00 con accesso libero\\x0b e notes'
     sample['additional_notes']='Esempio\\x0e & speciale < &'
     out=render_excel(TEMPLATE,sample)
-    assert b'PK\\x03\\x04'==out[:4]
+    assert b'PK\x03\x04'==out[:4]
     with ZipFile(io.BytesIO(out)) as f:
         for name in f.namelist():
             if name.endswith('.xml'):
