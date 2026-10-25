@@ -35,8 +35,8 @@ RISK_FLAGS = {
     'Servizi igienici':134, 'Disponibilità acqua':135,
 }
 
-# Column I contains immutable score weights. Column J contains organizer flags.
-# Never overwrite I102:I153: doing so would corrupt the event-risk assessment.
+# The original template uses column I as the user selection: write 'x'.
+# Column J holds formulas evaluating I; never write to J102:J153.
 CONTEXT_FLAGS={
     'In città':121, 'In periferia/paesi o piccoli centri urbani':122,
     'In ambiente acquatico (lago, fiume, mare, piscina)':123,
@@ -120,8 +120,8 @@ def input_cells(values):
         cells['G43' if values['road_closure'] else 'I43']=('text','X')
 
     def flag(row):
-        # In the original template, J is the response, I is the weight.
-        cells['J'+str(row)]=('number',1)
+        # J formulas use IF(I...=\"x\", score, 0): preserve them exactly.
+        cells['I'+str(row)]=('text','x')
 
     for key,rows in (('recurrence',RECURRENCE),('event_type',EVENT_TYPE),
                      ('event_duration_bracket',DURATION_FLAGS),
