@@ -171,12 +171,20 @@ def _set_cell(xml, address, kind, value):
         raw = str(value)
         if kind == 'number':
             return attrs + '><v>' + raw + '</v></c>'
-        content = escape(raw[:2000], {'"':'&quot;', "'":'&apos;'})
+        content = escape(_xml_safe(raw[:2000]), {'"':'&quot;', "'":'&apos;'})
         return attrs + ' t="inlineStr"><is><t>' + content + '</t></is></c>'
     xml, changed = pattern.subn(replace, xml, count=1)
     if changed != 1:
         raise ValueError('Excel template cell missing: ' + address)
     return xml
+
+
+def _xml_safe(value):
+    """Remove XML 1.0-forbidden characters before embedding user-supplied text."""
+    return ''.join(ch for ch in str(value)
+        if ch in '\\t\\n\\r' or 0x20 <= ord(ch) <= 0xD7FF
+        or 0xE000 <= ord(ch) <= 0xFFFD
+        or 0x10000 <= ord(ch) <= 0x10FFFF)
 
 
 def _display(value):
@@ -210,7 +218,7 @@ def _supplement_rows(values):
 def _worksheet_xml(values):
     rows = _supplement_rows(values)
     def cell(column,number,value):
-        encoded=escape(value[:32767], {'"':'&quot;', "'":'&apos;'})
+        encoded=escape(_xml_safe(value[:32767]), {'"':'&quot;', "'":'&apos;'})
         return (f'<c r="{column}{number}" t="inlineStr">'
                 f'<is><t xml:space="preserve">{encoded}</t></is></c>')
     body=''.join(
