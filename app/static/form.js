@@ -4,6 +4,8 @@ let reusedData=false;
 const reuseNames={
  org_name:'Ragione sociale / Ente',
  org_contact:'Nome e cognome referente',
+ org_first_name:'Nome referente',
+ org_last_name:'Cognome referente',
  org_address:'Indirizzo sede legale',
  org_tax_code:'Codice fiscale',
  org_vat:'Partita IVA',
@@ -26,11 +28,22 @@ const reuseNames={
  elderly:'Anziani',
  disabled:'Persone con disabilità',
  risk_options:'Fattori di rischio',
+ event_pause:'Pause evento',
+ road_documents:'Documentazione viabilità',
+ venue_context:'Ambiente e territorio',
+ venue_features:'Caratteristiche luogo',
+ venue_logistics:'Logistica',
+ crowd_age_profile:'Età prevalente',
+ crowd_density:'Densità del pubblico',
+ crowd_mood:'Condizione del pubblico',
+ crowd_position:'Posizione pubblico',
+ involved_entities:'Altri enti coinvolti',
+ involved_entities_other:'Altro ente',
  additional_notes:'Altre note'
 };
 const reuseFieldGroups=[
- {title:'Dati organizzatore',keys:['org_name','org_contact','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_pec']},
- {title:'Dati evento',keys:['event_name','event_city','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','risk_options','additional_notes']}
+ {title:'Dati organizzatore',keys:['org_name','org_contact','org_first_name','org_last_name','org_address','org_tax_code','org_vat','org_sdi','org_phone','org_pec']},
+ {title:'Dati evento',keys:['event_name','event_city','event_place','event_description','reference_name','reference_phone','event_type','recurrence','location_type','road_closure','participants_athletes','participants_public','children','elderly','disabled','risk_options','event_pause','road_documents','venue_context','venue_features','venue_logistics','crowd_age_profile','crowd_density','crowd_mood','crowd_position','involved_entities','involved_entities_other','additional_notes']}
 ];
 const historyChoices=[...document.querySelectorAll('input[name=historyMode]')];
 function setHistoryMode(mode){
@@ -175,9 +188,8 @@ document.getElementById('reuseEvent').onclick=()=>{
  if(!source){status.textContent='L’evento selezionato non è più disponibile.';return}
  for(const [key,value] of Object.entries(source.data||{})){
   if(!selected.has(key)||value===null||value===undefined||value==='')continue;
-  if(key==='risk_options'){
-   document.querySelectorAll('[name=risk_options]').forEach(box=>
-     box.checked=Array.isArray(value)&&value.includes(box.value));
+  if(multiChoiceNames.includes(key)){
+   setCheckboxes(key,value);
    count++;continue;
   }
   const target=form.elements[key];
@@ -185,6 +197,20 @@ document.getElementById('reuseEvent').onclick=()=>{
   target.value=typeof value==='boolean'?String(value):value;
   count++;
  }
+ if(selected.has('risk_options') && source.data && Array.isArray(source.data.risk_options)
+    && !Array.isArray(source.data.involved_entities)){
+   const legacy=['Protezione civile','Vigili del fuoco','Forze dell’ordine'];
+   setCheckboxes('involved_entities',source.data.risk_options.filter(x=>legacy.includes(x)));
+ }
+ // Historical records may only include the combined contact field.
+ // Prefill the split inputs as a suggestion and require manual confirmation.
+ if(selected.has('org_contact') && source.data && source.data.org_contact &&
+    !source.data.org_first_name && !source.data.org_last_name){
+   const words=source.data.org_contact.trim().split(/\s+/);
+   form.elements.org_first_name.value=words.length>1?words.slice(0,-1).join(' '):words[0];
+   form.elements.org_last_name.value=words.length>1?words[words.length-1]:'';
+ }
+ syncOrgContact();updateRoadDocumentation();
  reusedData=count>0;
  status.textContent=count
    ?'Dati copiati nel modulo: verifica ragione sociale, contatti, codice fiscale, partita IVA e tutti i dati dell’evento. L’email dell’invito è rimasta invariata. Inserisci nuove date e orari.'
