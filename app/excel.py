@@ -232,6 +232,17 @@ def _insert_before(source, token, addition, part):
     return source.replace(token, addition+token)
 
 
+def _force_formula_recalculation(xml):
+    # Preserve J score formulas and let Excel recalculate their cached results.
+    original=re.search(r'<calcPr\\b[^>]*?/>',xml)
+    if original:
+        tag=re.sub(r'\\s+(?:fullCalcOnLoad|forceFullCalc)="[^"]*"', '', original.group(0))
+        return xml[:original.start()]+tag[:-2]+' fullCalcOnLoad="1" forceFullCalc="1"/>'+xml[original.end():]
+    return _insert_before(xml,'</workbook>',
+        '<calcPr calcId="0" fullCalcOnLoad="1" forceFullCalc="1"/>',
+        'formula recalculation')
+
+
 def render_excel(template: Path, values: dict) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(template,'r') as original:
@@ -247,6 +258,7 @@ def render_excel(template: Path, values: dict) -> bytes:
         rel_ids=[int(n) for n in re.findall(r'\bId="rId(\d+)"',rels)]
         rid='rId'+str(max(rel_ids,default=0)+1)
         sheet_id=max(sheet_ids,default=0)+1
+        workbook=_force_formula_recalculation(workbook)
         workbook=_insert_before(workbook,'</sheets>',
             f'<sheet name="Dati compilazione" sheetId="{sheet_id}" r:id="{rid}"/>',
             'workbook sheets')
