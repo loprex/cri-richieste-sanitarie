@@ -8,7 +8,7 @@ function roleLabel(role){return ({operator:'Utente operatore',admin:'Admin',supe
 function formatEventSlot(slot){
  if(!slot||typeof slot!=='object')return slot==null?'':String(slot);
  const d=String(slot.date||'');
- const date=/^\\d{4}-\\d{2}-\\d{2}$/.test(d)?d.split('-').reverse().join('/'):d;
+ const date=/^\d{4}-\d{2}-\d{2}$/.test(d)?d.split('-').reverse().join('/'):d;
  const start=String(slot.start||'');
  const end=String(slot.end||'');
  return [date,[start,end].filter(Boolean).join('–')].filter(Boolean).join(' dalle ');
