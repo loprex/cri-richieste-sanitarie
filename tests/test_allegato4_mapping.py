@@ -106,3 +106,40 @@ def test_no_previous_event_can_reuse_protocol_dates_or_consents():
     for allowed in ('venue_features','crowd_density','involved_entities',
                     'org_first_name','org_last_name','event_pause'):
         assert "'"+allowed+"'" in reuse
+
+
+def test_form_has_all_backend_fields_and_multi_select_serialization():
+    from app.main import Submission
+    model=Submission.model_validate(VALUES)
+    assert model.org_contact=='Mario Rossi'
+    assert model.event_duration_bracket=='<12 ore'
+    assert model.participants_estimate_bracket=='<25.000'
+    assert model.venue_features==VALUES['venue_features']
+    assert model.involved_entities==VALUES['involved_entities']
+
+    root=Path(__file__).resolve().parents[1]/'app'/'static'
+    html=(root/'form.html').read_text()
+    js=(root/'form.js').read_text()
+    for key in ('org_first_name','org_last_name','crowd_age_profile',
+                'crowd_density','crowd_mood','crowd_position','event_pause',
+                'road_documents','involved_entities_other'):
+        assert f'name="{key}"' in html
+    for key in ('venue_context','venue_features','venue_logistics','involved_entities'):
+        assert key+':{' in js
+    assert 'for(const name of multiChoiceNames)values[name]=checkedChoices(name)' in js
+    assert 'loadPreviousEvents()' in js
+
+
+def test_older_submitted_payload_still_parses_and_exports():
+    from app.main import Submission
+    older=VALUES.copy()
+    for key in ('org_first_name','org_last_name','venue_context','venue_features',
+                'venue_logistics','event_pause','road_documents','crowd_age_profile',
+                'crowd_density','crowd_mood','crowd_position','involved_entities',
+                'involved_entities_other','event_duration_bracket',
+                'participants_estimate_bracket'):
+        older.pop(key,None)
+    old_model=Submission.model_validate(older)
+    assert old_model.org_contact=='Mario Rossi'
+    assert not old_model.venue_features
+    assert render_excel(TEMPLATE,old_model.model_dump())
